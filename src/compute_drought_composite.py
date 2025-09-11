@@ -395,6 +395,12 @@ def main():
         labels=["normal", "watch", "moderate", "severe"],
     )
 
+    df = (
+        ds.to_dataframe()
+        .reset_index()
+        .rename(columns={"time": "valid_time"})
+        .merge(df, on=["latitude", "longitude", "valid_time"], how="right")
+    )
     # --- 6) Save
     out = args.out
     logging.info(f"Writing {out} ...")
