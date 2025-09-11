@@ -4,27 +4,26 @@ Compute drought indicators and a composite index from a merged ERA5+NDVI NetCDF.
 
 Inputs
 ------
-- A NetCDF that already contains ERA5 monthly variables (e.g., tp, t2m) and NDVI on the same grid.
+- A NetCDF that already contains ERA5 monthly variables (e.g., tp, t2m), PET (e.g., pev), and NDVI on the same grid.
   Typically produced by your "prepare_era5_ndvi.py" step.
 
 What it does
 ------------
-1) Converts ERA5 precipitation to monthly totals (mm/month) using true days-in-month.
-2) Computes SPI-k (default k=3) per pixel (gamma fit -> standard normal).
+1) Converts ERA5 precipitation AND PET to monthly totals (mm/month) using true days-in-month.
+2) Computes SPEI-k (default k=3) per pixel (distribution fit -> standard normal).
 3) Computes TCI (Temperature Condition Index) per pixel/month using a fixed climatology baseline.
 4) Computes VCI (Vegetation Condition Index) per pixel/month using a fixed climatology baseline.
-5) Converts SPI/TCI/VCI to 0..1 *stress* scores and blends them into a composite index.
-6) Exports a tidy table (lat, lon, time, SPI, TCI, VCI, Composite, class).
+5) Converts SPEI/TCI/VCI to 0..1 *stress* scores and blends them into a composite index.
+6) Exports a tidy table (lat, lon, time, SPEI, TCI, VCI, Composite, class).
 
 Example
 -------
 python compute_drought_composite.py \
-  --in_nc data/netherlands_era5_with_ndvi_vci.nc \
-  --tp_var tp \
-  --t_var t2m \
-  --ndvi_var NDVI \
+  --in_nc data/netherlands_era5_with_ndvi.nc \
+  --tp_var tp --pet_var pev --pet_is_negative true \
+  --t_var t2m --ndvi_var NDVI \
   --spi_scale 3 \
-  --tci_baseline 2003:2020 \
+  --tci_baseline 1991:2020 \
   --vci_baseline 2003:2020 \
   --alpha 0.4 --beta 0.3 --gamma 0.3 \
   --start 1982-01 --end 2022-12 \
@@ -48,7 +47,6 @@ from climate_indices import compute, indices
 def _parse_period(s: Optional[str]) -> Optional[pd.Timestamp]:
     if s is None:
         return None
-    # accept YYYY or YYYY-MM or full date
     try:
         if len(s) == 4:
             return pd.Period(f"{s}-01", freq="M").to_timestamp()
@@ -73,14 +71,37 @@ def _days_in_month_index(times: pd.DatetimeIndex) -> xr.DataArray:
     )
 
 
-def _spi_gamma(
-    ts_mm: np.ndarray, scale: int, start_year: int, end_year: int
+def _spei_fit(
+    precip_mm: np.ndarray,
+    pet_mm: np.ndarray,
+    scale: int,
+    start_year: int,
+    end_year: int,
+    dist_name: str = "gamma",
 ) -> np.ndarray:
-    """Gamma-fit SPI using climate_indices for a 1D monthly series."""
-    return indices.spi(
-        values=ts_mm,
+    """
+    SPEI using climate_indices for a 1D monthly series of (P - PET) in mm.
+
+    dist_name: one of {"gamma", "pearson3", "loglogistic"} depending on your
+               climate_indices version build. Default "gamma" is safe.
+    """
+    # Map string to indices.Distribution enum
+    dist_map = {
+        "gamma": indices.Distribution.gamma,
+        "pearson3": getattr(
+            indices.Distribution, "pearson3", indices.Distribution.gamma
+        ),
+        "loglogistic": getattr(
+            indices.Distribution, "loglogistic", indices.Distribution.gamma
+        ),
+    }
+    dist = dist_map.get(dist_name.lower(), indices.Distribution.gamma)
+
+    return indices.spei(
+        precips_mm=precip_mm,
+        pet_mm=pet_mm,
         scale=scale,
-        distribution=indices.Distribution.gamma,
+        distribution=dist,
         data_start_year=start_year,
         calibration_year_initial=start_year,
         calibration_year_final=end_year,
@@ -88,9 +109,9 @@ def _spi_gamma(
     )
 
 
-def _spi_to_stress(spi: np.ndarray | pd.Series) -> np.ndarray:
-    # SPI <= -2 -> 1 (worst), SPI >= +2 -> 0
-    return np.clip((-np.asarray(spi) + 2.0) / 4.0, 0.0, 1.0)
+def _index_to_stress(z: np.ndarray | pd.Series) -> np.ndarray:
+    # Z <= -2 -> 1 (worst), Z >= +2 -> 0
+    return np.clip((-np.asarray(z) + 2.0) / 4.0, 0.0, 1.0)
 
 
 # ----------------------------- core ----------------------------- #
@@ -151,7 +172,7 @@ def compute_vci(
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Compute SPI, TCI, VCI and a composite drought index."
+        description="Compute SPEI, TCI, VCI and a composite drought index."
     )
     ap.add_argument(
         "--in_nc",
@@ -163,6 +184,17 @@ def main():
         "--tp_var",
         default="tp",
         help="Precip var name (ERA5 total_precipitation as monthly mean rate m/day).",
+    )
+    ap.add_argument(
+        "--pet_var",
+        default="pev",
+        help="PET var name (ERA5 potential evaporation as monthly mean rate m/day; ERA5 'pev' is negative).",
+    )
+    ap.add_argument(
+        "--pet_is_negative",
+        type=lambda s: str(s).lower() in {"1", "true", "yes", "y"},
+        default=True,
+        help="If PET values are negative (ERA5 'pev'), set true (default).",
     )
     ap.add_argument(
         "--t_var", default="t2m", help="Temperature var name (t2m or mx2t) in Kelvin."
@@ -180,7 +212,13 @@ def main():
         "--spi_scale",
         type=int,
         default=3,
-        help="SPI timescale in months (e.g., 1, 3, 6, 12).",
+        help="SPEI timescale in months (e.g., 1, 3, 6, 12).",
+    )
+    ap.add_argument(
+        "--spei_dist",
+        type=str,
+        default="gamma",
+        help="Distribution for SPEI fit: gamma | pearson3 | loglogistic (depends on climate_indices build).",
     )
     ap.add_argument(
         "--tci_baseline",
@@ -201,7 +239,7 @@ def main():
         "--beta", type=float, default=0.3, help="Weight for HeatStress (1-TCI)."
     )
     ap.add_argument(
-        "--gamma", type=float, default=0.3, help="Weight for ClimStress (SPI/SPEI)."
+        "--gamma", type=float, default=0.3, help="Weight for ClimStress (SPEI-derived)."
     )
     ap.add_argument(
         "--start", type=str, default=None, help="First month to keep (YYYY or YYYY-MM)."
@@ -212,7 +250,7 @@ def main():
     ap.add_argument(
         "--out",
         required=False,
-        default="data/test.csv",
+        default="data/drought_indices.csv",
         help="Output file (.parquet or .csv).",
     )
     ap.add_argument("--log", default="INFO", help="Logging level.")
@@ -248,33 +286,56 @@ def main():
         end = t1 or ds["time"].max().item()
         ds = ds.sel(time=slice(start, end))
 
-    # --- 1) Precip to mm/month using true days-in-month ---
+    # --- 1) Precip & PET to mm/month using true days-in-month ---
     if args.tp_var not in ds:
         raise ValueError(f"'{args.tp_var}' not found in dataset.")
-    tp = ds[args.tp_var]
-    # If value is monthly mean rate (m/day), multiply by days-in-month; if it's already monthly sum (m), change this line.
+    if args.pet_var not in ds:
+        raise ValueError(f"'{args.pet_var}' not found in dataset. Needed for SPEI.")
+
     days = _days_in_month_index(pd.to_datetime(ds["time"].values))
-    tp_mm = (tp * days) * 1000.0  # m/day * days -> m ; then to mm
+
+    # Precipitation: if monthly mean rate (m/day), multiply by days -> m; then to mm
+    tp = ds[args.tp_var]
+    tp_mm = (tp * days) * 1000.0
+
+    # PET: same conversion; ERA5 'pev' is negative, flip sign if needed
+    pet = ds[args.pet_var]
+    pet_mm = (pet * days) * 1000.0
+    if args.pet_is_negative:
+        pet_mm = -pet_mm
+
     df_pr = (
         tp_mm.to_dataframe(name="tp_mm")
         .reset_index()
         .rename(columns={"time": "valid_time"})
         .assign(valid_time=lambda d: pd.to_datetime(d["valid_time"]))
     )
+    df_pet = (
+        pet_mm.to_dataframe(name="pet_mm")
+        .reset_index()
+        .rename(columns={"time": "valid_time"})
+        .assign(valid_time=lambda d: pd.to_datetime(d["valid_time"]))
+    )
 
-    # --- 2) SPI per pixel ---
-    logging.info(f"Computing SPI-{args.spi_scale} ... (gamma fit per pixel)")
-    # Determine calibration years from the filtered time range:
-    years = pd.to_datetime(df_pr["valid_time"]).dt.year
+    df_wb = df_pr.merge(df_pet, on=["latitude", "longitude", "valid_time"], how="inner")
+
+    # --- 2) SPEI per pixel ---
+    logging.info(f"Computing SPEI-{args.spi_scale} ...")
+    years = pd.to_datetime(df_wb["valid_time"]).dt.year
     start_year, end_year = int(years.min()), int(years.max())
 
-    df_spi = (
-        df_pr.groupby(["latitude", "longitude"])
+    df_spei = (
+        df_wb.groupby(["latitude", "longitude"])
         .apply(
             lambda x: pd.DataFrame(
                 {
-                    "spi": _spi_gamma(
-                        x["tp_mm"].values, args.spi_scale, start_year, end_year
+                    "spei": _spei_fit(
+                        x["tp_mm"].values,
+                        x["pet_mm"].values,
+                        args.spi_scale,
+                        start_year,
+                        end_year,
+                        args.spei_dist,
                     ),
                     "valid_time": x["valid_time"].values,
                 }
@@ -312,12 +373,12 @@ def main():
 
     # --- 5) Merge all + composite ---
     logging.info("Merging indices and computing composite...")
-    df = df_spi.merge(
+    df = df_spei.merge(
         df_TCI, on=["latitude", "longitude", "valid_time"], how="left"
     ).merge(df_VCI, on=["latitude", "longitude", "valid_time"], how="left")
 
     # Stress scores (0..1, higher=worse)
-    df["ClimStress"] = _spi_to_stress(df["spi"])
+    df["ClimStress"] = _index_to_stress(df["spei"])
     df["HeatStress"] = 1.0 - df["TCI"]
     df["VegStress"] = 1.0 - df["VCI"]
 
