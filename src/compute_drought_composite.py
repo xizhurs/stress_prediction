@@ -399,6 +399,21 @@ def main():
         ds.to_dataframe()
         .reset_index()
         .rename(columns={"time": "valid_time"})
+        .assign(valid_time=lambda d: pd.to_datetime(d["valid_time"]))
+        .assign(ndvi=lambda d: d[args.ndvi_var] * args.ndvi_scale)
+        .assign(
+            tp_mm=lambda d: d[args.tp_var]
+            * _days_in_month_index(d["valid_time"])
+            * 1000.0
+        )
+        .assign(
+            pet_mm=lambda d: (
+                -d[args.pet_var] if args.pet_is_negative else d[args.pet_var]
+            )
+            * _days_in_month_index(d["valid_time"])
+            * 1000.0
+        )
+        .assign(T_c=lambda d: d[args.t_var] - 273.15)
         .merge(df, on=["latitude", "longitude", "valid_time"], how="right")
     )
     # --- 6) Save
