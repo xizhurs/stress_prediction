@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from models.models import LSTMClassifier, TransEncClassifier
+from src.models.models import LSTMClassifier, TransEncClassifier
 from src.data.dataset import create_dataset
 from sklearn.metrics import f1_score, classification_report
 from torch.utils.data import DataLoader
@@ -142,7 +142,7 @@ if __name__ == "__main__":
         scaling_dir="data/ts_train/scaler",
     )
 
-    model = LSTMClassifier(feat_dim=6)
+    model = TransEncClassifier(feat_dim=6)
     train_seq_model(
         model, train_ds, val_ds, epochs=30, lr=3e-4, batch_size=16, patience=30
     )
