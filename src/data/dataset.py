@@ -328,7 +328,6 @@ def create_dataset(
                 RandomTemporalDropout(p_drop=0.05, p=0.5),
             ]
         )
-
         dataset_train, dataset_val, dataset_test = (
             SeqDataset(
                 X_train,
@@ -337,7 +336,7 @@ def create_dataset(
                 stds,
                 transform=transform,
             ),
-            SeqDataset(X_val[index_val], y_val[index_val], means, stds),
+            SeqDataset(X_val, y_val, means, stds),
             SeqDataset(X_test, y_test, means, stds),
         )
 
