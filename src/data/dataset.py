@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 from datetime import datetime
 from tqdm import tqdm
 from glob import glob
+from sklearn.preprocessing import LabelEncoder
 
 
 def get_seq_data(
@@ -262,12 +263,8 @@ class SeqDataset(Dataset):
         self.means = means
         self.stds = stds
         self.X = X  # [B, N, F]
-        self.y_str = y
         self.transform = transform
-        # encode labels to ints (Transformer/LSTM need ints for CE)
-        classes, y_idx = np.unique(self.y_str, return_inverse=True)
-        self.classes_ = classes
-        self.y = y_idx.astype(np.int64)
+        self.y = y.astype(np.int64)
 
         self.X = (self.X - self.means) / self.stds
 
@@ -282,14 +279,29 @@ class SeqDataset(Dataset):
         return torch.from_numpy(x), torch.tensor(y)
 
 
+mapping = {
+    "watch": "normal",
+    "moderate": "normal",
+    "normal": "normal",
+    "severe": "stressed",
+}
+
+
 def create_dataset(
     processed=True,
     train_input_dir="data/ts_train/npy",
     ts_data="data/drought_indices.csv",
     scaling_dir="data/ts_train/scaler",
+    binary_class=True,
 ):
+    le = LabelEncoder()
     if not processed:
         X_train, y_train, X_val, y_val, X_test, y_test = get_split(file=ts_data)
+        if binary_class:
+            y_train = np.vectorize(mapping.get)(y_train)
+            y_val = np.vectorize(mapping.get)(y_val)
+            y_test = np.vectorize(mapping.get)(y_test)
+
         with open(train_input_dir + "/X_train.npy", "wb") as f:
             np.save(f, X_train)
         with open(train_input_dir + "/y_train.npy", "wb") as f:
@@ -302,6 +314,9 @@ def create_dataset(
             np.save(f, X_test)
         with open(train_input_dir + "/y_test.npy", "wb") as f:
             np.save(f, y_test)
+        y_train = le.fit_transform(y_train)
+        y_val = le.transform(y_val)
+        y_test = le.transform(y_test)
         means = np.mean(X_train, keepdims=True, axis=(0, 1))
         stds = np.std(X_train, keepdims=True, axis=(0, 1))
 
@@ -316,6 +331,13 @@ def create_dataset(
         y_val = np.load(train_input_dir + "/y_val.npy", mmap_mode="r")
         X_test = np.load(train_input_dir + "/X_test.npy", mmap_mode="r")
         y_test = np.load(train_input_dir + "/y_test.npy", mmap_mode="r")
+        if binary_class:
+            y_train = np.vectorize(mapping.get)(y_train)
+            y_val = np.vectorize(mapping.get)(y_val)
+            y_test = np.vectorize(mapping.get)(y_test)
+        y_train = le.fit_transform(y_train)
+        y_val = le.transform(y_val)
+        y_test = le.transform(y_test)
         means = np.load(scaling_dir + "/means.npy")
         stds = np.load(scaling_dir + "/stds.npy")
 
@@ -340,7 +362,7 @@ def create_dataset(
             SeqDataset(X_test, y_test, means, stds),
         )
 
-    return dataset_train, dataset_val, dataset_test
+    return dataset_train, dataset_val, dataset_test, le
 
 
 if __name__ == "__main__":
