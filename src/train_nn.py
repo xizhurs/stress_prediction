@@ -93,7 +93,11 @@ def train_seq_model(
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-2)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0.0001)
-    criterion = nn.CrossEntropyLoss(ignore_index=255)
+    _, counts = np.unique(train_ds.y, return_counts=True)
+    w = counts.max() / counts
+    weight = torch.tensor(w, dtype=torch.float32, device=device)
+
+    criterion = nn.CrossEntropyLoss(weight=weight)
 
     best_predict = -1
     epochs_no_improve = 0
