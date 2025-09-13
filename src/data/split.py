@@ -1,25 +1,19 @@
-def split_data(X, y):
+def split_data(X, y, target_col):
     # time-based split
     train_mask = X["valid_time"] < "2016-01-01"
     val_mask = (X["valid_time"] >= "2016-01-01") & (X["valid_time"] < "2019-01-01")
     test_mask = X["valid_time"] >= "2019-01-01"
 
     X_train, y_train = (
-        X[train_mask].drop(
-            columns=["valid_time", "drought_class", "latitude", "longitude"]
-        ),
+        X[train_mask].drop(columns=["valid_time", target_col, "latitude", "longitude"]),
         y[train_mask],
     )
     X_val, y_val = (
-        X[val_mask].drop(
-            columns=["valid_time", "drought_class", "latitude", "longitude"]
-        ),
+        X[val_mask].drop(columns=["valid_time", target_col, "latitude", "longitude"]),
         y[val_mask],
     )
     X_test, y_test = (
-        X[test_mask].drop(
-            columns=["valid_time", "drought_class", "latitude", "longitude"]
-        ),
+        X[test_mask].drop(columns=["valid_time", target_col, "latitude", "longitude"]),
         y[test_mask],
     )
 

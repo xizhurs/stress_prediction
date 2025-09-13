@@ -4,16 +4,18 @@ from tqdm import tqdm
 
 
 def feature_extraction(
-    df,  # columns: latitude, longitude, valid_time, tp_mm, pet_mm, T_c, ndvi, drought_class (or a numeric target)
+    df,
+    # columns: latitude, longitude, valid_time, tp_mm, pet_mm, T_c,
+    # ndvi, drought_class (or a numeric target)
     n_lags=6,  # how many past months to use as features
     horizon=6,  # how many months ahead to predict
     keep_current=False,  # keep current-month (t) raw vars as features?
+    feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
     target_col="drought_class",  # or "DroughtComposite" for regression
 ):
     df = df.sort_values(["latitude", "longitude", "valid_time"]).copy()
     out = []
-    feat_vars = ["tp_mm", "pet_mm", "T_c", "ndvi"]
-
+    df = df[feat_vars + ["latitude", "longitude", "valid_time"] + [target_col]]
     for (lat, lon), g in tqdm(df.groupby(["latitude", "longitude"], sort=False)):
         g = g.reset_index(drop=True)
 

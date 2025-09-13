@@ -7,12 +7,22 @@ from src.models.lightgbm import LGBMClassifier_tuned
 from src.features.feature_calculation import feature_extraction
 from src.data.split import split_data
 
+# to add
+# soil moisture, temperature, nutrient, drainage
+# landcover, landuse, crop type
+# topography
+# irrigation data
+# lst
+
 df = pd.read_csv("data/drought_indices.csv", parse_dates=["valid_time"])[
     [
         "valid_time",
         "latitude",
         "longitude",
         "drought_class",
+        "climate_stress_class",
+        "heat_stress_class",
+        "vegetation_stress_class",
         "tp_mm",
         "pet_mm",
         "T_c",
@@ -21,11 +31,25 @@ df = pd.read_csv("data/drought_indices.csv", parse_dates=["valid_time"])[
 ]
 
 
-def train_lgb(df):
+def train_lgb(
+    df,
+    n_lags=12,
+    horizon=1,
+    keep_current=False,
+    feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
+    target_col="vegetation_stress_class",
+):
     X, y = feature_extraction(
-        df, n_lags=12, horizon=1, keep_current=False, target_col="drought_class"
+        df,
+        n_lags=n_lags,
+        horizon=horizon,
+        keep_current=keep_current,
+        feat_vars=feat_vars,
+        target_col=target_col,
     )
-    (X_train, y_train, X_val, y_val, X_test, y_test) = split_data(X, y)
+    (X_train, y_train, X_val, y_val, X_test, y_test) = split_data(
+        X, y, target_col=target_col
+    )
 
     lgbclassifier = LGBMClassifier_tuned(X_train, y_train, X_val, y_val, n_trials=30)
     lgbclassifier()
@@ -38,7 +62,14 @@ def train_lgb(df):
     return y_test, y_pred_test_lgb
 
 
-y_test, y_pred_test_lgb = train_lgb(df)
+y_test, y_pred_test_lgb = train_lgb(
+    df,
+    n_lags=12,
+    horizon=6,
+    keep_current=False,
+    feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
+    target_col="vegetation_stress_class",
+)
 
 
 fig, ax = plt.subplots(1, 3, figsize=(15, 5))

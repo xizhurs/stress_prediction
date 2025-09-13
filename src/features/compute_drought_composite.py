@@ -395,6 +395,27 @@ def main():
         labels=["normal", "watch", "moderate", "severe"],
     )
 
+    # Apply classification
+    df["climate_stress_class"] = pd.cut(
+        df["spei"],
+        bins=[-float("inf"), -2.0, -1.5, -1.0, 0.0, 1.0, float("inf")],
+        labels=["extreme", "severe", "moderate", "mild", "normal", "no_stress"],
+    )
+
+    # Apply classification
+    df["heat_stress_class"] = pd.cut(
+        df["TCI"],
+        bins=[-1, 0.25, 0.50, 0.75, 1.01],
+        labels=["severe", "moderate", "mild", "normal"],
+        right=False,  # left-inclusive intervals
+    )
+
+    df["vegetation_stress_class"] = pd.cut(
+        df["VCI"],
+        bins=[-1, 0.35, 0.50, 0.75, 1.01],
+        labels=["severe", "moderate", "mild", "normal"],
+    )
+
     df = (
         ds.to_dataframe()
         .reset_index()
