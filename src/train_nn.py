@@ -149,5 +149,5 @@ if __name__ == "__main__":
 
     model = TransEncClassifier(feat_dim=6, num_classes=4)
     train_seq_model(
-        model, train_ds, val_ds, epochs=30, lr=3e-4, batch_size=512, patience=30
+        model, train_ds, val_ds, epochs=30, lr=1e-3, batch_size=512, patience=30
     )
