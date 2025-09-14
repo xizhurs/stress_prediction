@@ -412,7 +412,7 @@ def main():
 
     df["vegetation_stress_class"] = pd.cut(
         df["VCI"],
-        bins=[-1, 0.35, 0.50, 0.75, 1.01],
+        bins=[-1, 0.25, 0.50, 0.75, 1.01],
         labels=["severe", "moderate", "mild", "normal"],
     )
 
