@@ -144,10 +144,10 @@ if __name__ == "__main__":
         train_input_dir="data/ts_train/npy",
         ts_data="data/drought_indices.csv",
         scaling_dir="data/ts_train/scaler",
-        binary_class=True,
+        binary_class=False,
     )
 
-    model = TransEncClassifier(feat_dim=6, num_classes=2)
+    model = TransEncClassifier(feat_dim=6, num_classes=4)
     train_seq_model(
         model, train_ds, val_ds, epochs=30, lr=3e-4, batch_size=512, patience=30
     )
