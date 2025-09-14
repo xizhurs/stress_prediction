@@ -1,127 +1,170 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from datetime import datetime
-from tqdm import tqdm
-from glob import glob
 from sklearn.preprocessing import LabelEncoder
+from numpy.lib.stride_tricks import sliding_window_view
+from tqdm import tqdm
 
 
-def get_seq_data(
+def create_grouped_sequences(
     df: pd.DataFrame,
     seq_len: int = 12,
     horizon: int = 6,
-    feats=("tp_mm", "pet_mm", "T_c", "ndvi", "month_sin", "month_cos"),
-    label_col: str = "drought_class",
+    feature_cols=[
+        "tp_mm",
+        "pet_mm",
+        "T_c",
+        "ndvi",
+        "month_sin",
+        "month_cos",
+    ],  # e.g. ["tp_mm","pet_mm","T_c","ndvi","month_sin","month_cos"]
+    target_cols="vegetation_stress_class",
+    group_cols=("latitude", "longitude"),
+    time_col="valid_time",
     enforce_monthly_continuity: bool = True,
+    drop_nan_windows: bool = True,
     return_meta: bool = False,
 ):
     """
-    Build (B, Seq, F) sequences per (lat, lon). Uses sliding windows ending at t,
-    predicts label at t + horizon. Ensures monthly continuity if requested.
+    Build (B, Seq, F) sequences per spatial group, predicting labels at t+horizon.
 
-    df must contain: latitude, longitude, valid_time (datetime64[ns]), label_col,
-    and features.
-    If month_sin/cos aren't present, they'll be added.
+    Assumes df has been pre-imputed (or set drop_nan_windows=False).
+
+    Returns
+    -------
+    X : np.ndarray  [B, Seq, F]
+    y : np.ndarray  [B, Tgt]
+    feats_used : list[str]
+    meta : list[dict] (optional) with group + reference/label timestamps per sample
     """
+    # 1) Sort and basic checks
     df = df.copy()
-
-    # Ensure datetime and sort
-    df["valid_time"] = pd.to_datetime(df["valid_time"])
-    df = df.sort_values(["latitude", "longitude", "valid_time"])
-
-    # Add month features if missing
+    df[time_col] = pd.to_datetime(df[time_col])
+    df = df.sort_values([*group_cols, time_col]).reset_index(drop=True)
     if "month_sin" not in df.columns or "month_cos" not in df.columns:
         m = df["valid_time"].dt.month
         df["month_sin"] = np.sin(2 * np.pi * m / 12.0)
         df["month_cos"] = np.cos(2 * np.pi * m / 12.0)
+    # Feature/target column resolution
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if feature_cols is None:
+        # sensible default: all numeric except obvious non-features
+        feature_cols = numeric_cols.copy()
+    if target_cols is None:
+        target_cols = ["drought_class"] if "drought_class" in df.columns else []
 
-    # Drop non-numeric columns from feats (e.g., if user mistakenly includes
-    # 'valid_time')
-    feats = [
-        f for f in feats if f in df.columns and pd.api.types.is_numeric_dtype(df[f])
-    ]
+    # Ensure features don’t include the target(s)
+    feats_used = [c for c in feature_cols if c not in target_cols]
+    if len(feats_used) == 0:
+        raise ValueError("No feature columns selected after excluding target columns.")
 
-    # Helper to check monthly continuity via period ordinals
-    def _is_consecutive_months(periods):
-        if len(periods) <= 1:
-            return True
-        ords = periods.astype("period[M]").astype(int).to_numpy()
-        return np.all(np.diff(ords) == 1)
+    # 2) Helper to build sequences for a single group
+    def _group_windows(g: pd.DataFrame):
+        # enforce regular monthly continuity if requested
+        months = g[time_col].dt.to_period("M").astype(int).to_numpy()
+        vals = g[feats_used].to_numpy()  # [T, F]
+        tvals = g[target_cols].to_numpy()
 
-    X, y, meta = [], [], []
+        T = len(g)
+        if T < seq_len + horizon:
+            return None
 
-    for (_, _), g in tqdm(df.groupby(["latitude", "longitude"], sort=False)):
-        g = g.reset_index(drop=True)
+        # sliding input windows: (T - seq_len + 1, seq_len, F)
+        win = sliding_window_view(vals, (seq_len, vals.shape[1]))[:, 0, :, :]
+        # aligned targets at +horizon: (T - seq_len - horizon + 1, Tgt)
+        if target_cols:
+            y = tvals[seq_len + horizon - 1 :]
+        else:
+            y = np.empty((T - seq_len - horizon + 1, 0), dtype=np.float32)
 
-        # Precompute monthly period ordinals for continuity checks
-        months = g["valid_time"].dt.to_period("M")
+        # keep only indices with enough future label
+        X = win[:-horizon] if horizon > 0 else win
+        # reference time = end of input window (t)
+        t_ref = g[time_col].to_numpy()[seq_len - 1 : T - horizon]
+        # label time = t + horizon
+        t_lab = g[time_col].to_numpy()[seq_len - 1 + horizon :]
 
-        for t in range(seq_len - 1, len(g) - horizon):
-            start = t - seq_len + 1
-            end = t + 1  # python slice end-exclusive
+        # continuity mask (history must be strictly consecutive months)
+        if enforce_monthly_continuity:
+            # build ordinals for the end-of-window t and label t+h
+            ords = months
+            ord_ref = ords[seq_len - 1 : T - horizon]
+            ord_lab = ords[seq_len - 1 + horizon :]
+            # check label jump
+            ok_label = (ord_lab - ord_ref) == horizon
 
-            if enforce_monthly_continuity:
-                # 1) history window continuity
-                if not _is_consecutive_months(months.iloc[start : t + 1]):
-                    continue
-                # 2) label continuity: ensure the label timestamp is exactly horizon
-                # months ahead
-                #    i.e., period(t+h) = period(t) + horizon
-                if (
-                    months.iloc[t + horizon].ordinal - months.iloc[t].ordinal
-                ) != horizon:
-                    continue
+            # check history continuity using windowed diffs == 1
+            # (T - 1) diffs; slide over (seq_len-1) consecutive diffs
+            diffs = np.diff(ords)  # shape [T-1]
+            diffs_win = sliding_window_view(
+                diffs, seq_len - 1
+            )  # [T-seq_len, seq_len-1]
+            # align to X/y (note: X length = T - seq_len - horizon + 1)
+            hist_ok = np.all(diffs_win[: len(X)] == 1, axis=1)
 
-            window = g.iloc[start:end]
-            x = window[feats].to_numpy(dtype=np.float32)  # (Seq, F)
+            ok = hist_ok & ok_label
+            X, y = X[ok], y[ok]
+            t_ref, t_lab = t_ref[ok], t_lab[ok]
 
-            # Drop if any NaNs in the window (or implement your imputation before this
-            # function)
-            if np.isnan(x).any():
-                continue
+        if drop_nan_windows:
+            nan_mask = ~np.any(np.isnan(X), axis=(1, 2))
+            if target_cols:
+                nan_mask &= ~np.any(pd.isna(y), axis=1) if y.ndim == 2 else ~pd.isna(y)
+            X, y = X[nan_mask], y[nan_mask]
+            t_ref, t_lab = t_ref[nan_mask], t_lab[nan_mask]
 
-            yi = g.loc[t + horizon, label_col]
-            X.append(x)
-            y.append(yi)
+        if X.size == 0:
+            return None
 
-            if return_meta:
-                meta.append(
-                    {
-                        "latitude": g.loc[t, "latitude"],
-                        "longitude": g.loc[t, "longitude"],
-                        "t_ref": g.loc[
-                            t, "valid_time"
-                        ],  # last timestep in the input window
-                        "t_label": g.loc[t + horizon, "valid_time"],  # label timestamp
-                    }
-                )
+        # collect meta per sample
+        meta = [
+            {**{gc: g.iloc[0][gc] for gc in group_cols}, "t_ref": tr, "t_label": tl}
+            for tr, tl in zip(t_ref, t_lab)
+        ]
+        return X.astype(np.float32), y, meta
 
-    X = (
-        np.stack(X, axis=0)
-        if X
-        else np.empty((0, seq_len, len(feats)), dtype=np.float32)
-    )
-    y = np.array(y)
+    # 3) Apply per group
+    Xs, Ys, Metas = [], [], []
+    for _, g in tqdm(df.groupby(list(group_cols), sort=False)):
+        out = _group_windows(g)
+        if out is None:
+            continue
+        Xg, yg, mg = out
+        Xs.append(Xg)
+        Ys.append(yg)
+        Metas.extend(mg)
 
-    if return_meta:
-        return X, y, feats, meta
-    return X, y, feats
+    if not Xs:
+        # empty
+        X = np.empty((0, seq_len, len(feats_used)), dtype=np.float32)
+        y = np.empty((0, len(target_cols))) if target_cols else np.empty((0, 0))
+        return (X, y, feats_used) if not return_meta else (X, y, feats_used, Metas)
+
+    X = np.concatenate(Xs, axis=0).astype(np.float32)
+    y = np.concatenate(Ys, axis=0)
+
+    # Ensure y shape is 2D for consistency
+    if y.ndim == 1:
+        y = y[:, None]
+
+    return (X, y, feats_used) if not return_meta else (X, y, feats_used, Metas)
 
 
 def get_split(
     file="data/drought_indices.csv",
     seq_len: int = 12,
     horizon: int = 6,
-    feats=("tp_mm", "pet_mm", "T_c", "ndvi", "month_sin", "month_cos"),
-    label_col: str = "drought_class",
+    feature_cols=("tp_mm", "pet_mm", "T_c", "ndvi", "month_sin", "month_cos"),
+    target_cols: str = "drought_class",
+    time_col: str = "valid_time",
     enforce_monthly_continuity: bool = True,
     return_meta: bool = False,
 ):
-    df = pd.read_csv(file, parse_dates=["valid_time"])[
+    df = pd.read_csv(file, parse_dates=[time_col])[
         [
-            "valid_time",
+            time_col,
             "latitude",
             "longitude",
             "drought_class",
@@ -133,39 +176,47 @@ def get_split(
     ].pipe(
         lambda x: x[x.valid_time.between(datetime(1982, 1, 1), datetime(2022, 12, 31))]
     )
-    train_mask = df["valid_time"] < "2016-01-01"
-    val_mask = (df["valid_time"] >= "2016-01-01") & (df["valid_time"] < "2019-01-01")
-    test_mask = df["valid_time"] >= "2019-01-01"
+    train_mask = df[time_col] < "2016-01-01"
+    val_mask = (df[time_col] >= "2016-01-01") & (df[time_col] < "2019-01-01")
+    test_mask = df[time_col] >= "2019-01-01"
 
     df_train = df[train_mask]
     df_val = df[val_mask]
     df_test = df[test_mask]
-    X_train, y_train, _ = get_seq_data(
-        df_train,
-        seq_len,
-        horizon,
-        feats,
-        label_col,
-        enforce_monthly_continuity,
-        return_meta,
+    X_train, y_train, _ = create_grouped_sequences(  # type: ignore
+        df=df_train,
+        seq_len=seq_len,
+        horizon=horizon,
+        feature_cols=feature_cols,
+        target_cols=target_cols,
+        time_col="valid_time",
+        enforce_monthly_continuity=enforce_monthly_continuity,
+        drop_nan_windows=True,
+        return_meta=return_meta,
     )
-    X_val, y_val, _ = get_seq_data(
-        df_val,
-        seq_len,
-        horizon,
-        feats,
-        label_col,
-        enforce_monthly_continuity,
-        return_meta,
+    X_val, y_val, _ = create_grouped_sequences(  # pyright: ignore[reportAssignmentType]
+        df=df_val,
+        seq_len=seq_len,
+        horizon=horizon,
+        feature_cols=feature_cols,
+        target_cols=target_cols,
+        time_col="valid_time",
+        enforce_monthly_continuity=enforce_monthly_continuity,
+        drop_nan_windows=True,
+        return_meta=return_meta,
     )
-    X_test, y_test, _ = get_seq_data(
-        df_test,
-        seq_len,
-        horizon,
-        feats,
-        label_col,
-        enforce_monthly_continuity,
-        return_meta,
+    X_test, y_test, _ = (  # pyright: ignore[reportAssignmentType]
+        create_grouped_sequences(
+            df=df_test,
+            seq_len=seq_len,
+            horizon=horizon,
+            feature_cols=feature_cols,
+            target_cols=target_cols,
+            time_col="valid_time",
+            enforce_monthly_continuity=enforce_monthly_continuity,
+            drop_nan_windows=True,
+            return_meta=return_meta,
+        )
     )
     return (X_train, y_train, X_val, y_val, X_test, y_test)
 
@@ -292,9 +343,19 @@ def create_dataset(
     train_input_dir="data/ts_train/npy",
     ts_data="data/drought_indices.csv",
     scaling_dir="data/ts_train/scaler",
-    binary_class=True,
+    binary_class=False,
 ):
     le = LabelEncoder()
+
+    transform = Compose(
+        [
+            RandomJitter(sigma=0.01, p=0.5),
+            RandomFeatureScale(sigma=0.05, p=0.5),
+            TimeMask(max_width=2, p=0.5),
+            RandomTimeShift(max_shift=1, p=0.5),
+            RandomTemporalDropout(p_drop=0.05, p=0.5),
+        ]
+    )
     if not processed:
         X_train, y_train, X_val, y_val, X_test, y_test = get_split(file=ts_data)
         if binary_class:
@@ -341,29 +402,26 @@ def create_dataset(
         means = np.load(scaling_dir + "/means.npy")
         stds = np.load(scaling_dir + "/stds.npy")
 
-        transform = Compose(
-            [
-                RandomJitter(sigma=0.01, p=0.5),
-                RandomFeatureScale(sigma=0.05, p=0.5),
-                TimeMask(max_width=2, p=0.5),
-                RandomTimeShift(max_shift=1, p=0.5),
-                RandomTemporalDropout(p_drop=0.05, p=0.5),
-            ]
-        )
-        dataset_train, dataset_val, dataset_test = (
-            SeqDataset(
-                X_train,
-                y_train,
-                means,
-                stds,
-                transform=transform,
-            ),
-            SeqDataset(X_val, y_val, means, stds),
-            SeqDataset(X_test, y_test, means, stds),
-        )
+    dataset_train, dataset_val, dataset_test = (
+        SeqDataset(
+            X_train,
+            y_train,
+            means,
+            stds,
+            transform=transform,
+        ),
+        SeqDataset(X_val, y_val, means, stds),
+        SeqDataset(X_test, y_test, means, stds),
+    )
 
     return dataset_train, dataset_val, dataset_test, le
 
 
 if __name__ == "__main__":
-    dataset_train, dataset_val, dataset_test = create_dataset(batch_size=4)
+    dataset_train, dataset_val, dataset_test, le = create_dataset(
+        processed=False,
+        train_input_dir="data/ts_train/npy",
+        ts_data="data/drought_indices.csv",
+        scaling_dir="data/ts_train/scaler",
+        binary_class=False,
+    )
