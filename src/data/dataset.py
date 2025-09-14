@@ -143,7 +143,7 @@ def create_grouped_sequences(
         return (X, y, feats_used) if not return_meta else (X, y, feats_used, Metas)
 
     X = np.concatenate(Xs, axis=0).astype(np.float32)
-    y = np.concatenate(Ys, axis=0)
+    y = np.concatenate(Ys, axis=0).astype(str)
 
     # Ensure y shape is 2D for consistency
     if y.ndim == 1:
