@@ -46,6 +46,43 @@ mapping = {
 }
 
 
+def plot_best_probability_val(proba_va, y_val):
+    thresholds = np.linspace(0, 1, 100)
+    precisions = []
+    recalls = []
+    f1_scores = []
+
+    for threshold in thresholds:
+        y_pre_val = (proba_va >= threshold).astype(int)
+        prec = precision_score(y_val, y_pre_val, zero_division=0)
+        rec = recall_score(y_val, y_pre_val, zero_division=0)
+        f1 = f1_score(y_val, y_pre_val)
+        precisions.append(prec)
+        recalls.append(rec)
+        f1_scores.append(f1)
+
+    # Plot the metrics
+    plt.figure(figsize=(8, 6))
+    plt.plot(thresholds, precisions, label="Precision")
+    plt.plot(thresholds, recalls, label="Recall")
+    plt.plot(thresholds, f1_scores, label="F1-score")
+
+    # Mark the best F1-score threshold
+    best_idx = np.argmax(f1_scores)
+    plt.scatter(
+        thresholds[best_idx],
+        f1_scores[best_idx],
+        color="red",
+        label="Best F1-score threshold",
+    )
+
+    plt.xlabel("Threshold")
+    plt.ylabel("Metric value")
+    plt.title("Precision, Recall, and F1-score at different thresholds")
+    plt.legend()
+    plt.show()
+
+
 def train_lgb(
     df,
     n_lags=12,
@@ -86,19 +123,11 @@ def train_lgb(
     print(
         f"Best F1 threshold={thr_va[best_idx_va]:.3f}, P={prec_va[best_idx_va]:.2f}, R={rec_va[best_idx_va]:.2f}"
     )
+    plot_best_probability_val(proba_va, y_val)
 
     proba_te = lgbclassifier.final_clf.predict_proba(X_test)[:, 1]
     ap_te = average_precision_score(y_test, proba_te)
     auc_te = roc_auc_score(y_test, proba_te)
-
-    # Evaluate at different thresholds
-    thresholds = [0.25, 0.5, 0.75, thr_va[best_idx_va]]
-    for threshold in thresholds:
-        yhat = (proba_te >= threshold).astype(int)
-        prec = precision_score(y_test, yhat)
-        rec = recall_score(y_test, yhat)
-        f1 = f1_score(y_test, yhat, average="macro")
-        print(f"Threshold={threshold:.2f}, P={prec:.2f}, R={rec:.2f}, F1={f1:.3f}")
 
     # Use the best threshold found on validation set
     yhat = (proba_te >= thr_va[best_idx_va]).astype(int)
@@ -112,7 +141,7 @@ def train_lgb(
 y_test, yhat = train_lgb(
     df,
     n_lags=12,
-    horizon=1,
+    horizon=6,
     keep_current=False,
     feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
     target_col="vegetation_stress_class",
