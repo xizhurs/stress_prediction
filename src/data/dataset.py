@@ -340,6 +340,7 @@ mapping = {
 
 def create_dataset(
     processed=True,
+    horizon=6,
     train_input_dir="data/ts_train/npy",
     ts_data="data/drought_indices.csv",
     scaling_dir="data/ts_train/scaler",
@@ -357,7 +358,9 @@ def create_dataset(
         ]
     )
     if not processed:
-        X_train, y_train, X_val, y_val, X_test, y_test = get_split(file=ts_data)
+        X_train, y_train, X_val, y_val, X_test, y_test = get_split(
+            file=ts_data, horizon=horizon
+        )
         if binary_class:
             y_train = np.vectorize(mapping.get)(y_train)
             y_val = np.vectorize(mapping.get)(y_val)
@@ -420,6 +423,7 @@ def create_dataset(
 if __name__ == "__main__":
     dataset_train, dataset_val, dataset_test, le = create_dataset(
         processed=False,
+        horizon=1,
         train_input_dir="data/ts_train/npy",
         ts_data="data/drought_indices.csv",
         scaling_dir="data/ts_train/scaler",
