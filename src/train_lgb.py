@@ -110,7 +110,8 @@ def train_lgb(
     lgbclassifier = LGBMClassifier_tuned(X_train, y_train, X_val, y_val, n_trials=30)
     lgbclassifier()
     lgbclassifier.fit()
-
+    X_val = lgbclassifier.scaler.transform(X_val)
+    X_test = lgbclassifier.scaler.transform(X_test)
     proba_va = lgbclassifier.final_clf.predict_proba(X_val)[:, 1]
     ap_va = average_precision_score(y_val, proba_va)
     auc_va = roc_auc_score(y_val, proba_va)
