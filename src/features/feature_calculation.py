@@ -15,7 +15,7 @@ def feature_extraction(
 ):
     df = df.sort_values(["latitude", "longitude", "valid_time"]).copy()
     out = []
-    df = df[feat_vars + ["latitude", "longitude", "valid_time"] + [target_col]]
+
     for (lat, lon), g in tqdm(df.groupby(["latitude", "longitude"], sort=False)):
         g = g.reset_index(drop=True)
 
