@@ -30,6 +30,13 @@ df = pd.read_csv("data/drought_indices.csv", parse_dates=["valid_time"])[
     ]
 ]
 
+mapping = {
+    "mild": 0,
+    "moderate": 0,
+    "normal": 0,
+    "severe": 1,
+}
+
 
 def train_lgb(
     df,
@@ -38,6 +45,7 @@ def train_lgb(
     keep_current=False,
     feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
     target_col="vegetation_stress_class",
+    binary=True,
 ):
     X, y = feature_extraction(
         df,
@@ -47,6 +55,9 @@ def train_lgb(
         feat_vars=feat_vars,
         target_col=target_col,
     )
+    if binary:
+        y = pd.Series(np.vectorize(mapping.get)(y))
+        X = X.reset_index(drop=True)
     (X_train, y_train, X_val, y_val, X_test, y_test) = split_data(
         X, y, target_col=target_col
     )
@@ -69,6 +80,7 @@ y_test, y_pred_test_lgb = train_lgb(
     keep_current=False,
     feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
     target_col="vegetation_stress_class",
+    binary=True,
 )
 
 

@@ -343,10 +343,10 @@ class SeqDataset(Dataset):
 
 
 mapping = {
-    "watch": "normal",
-    "moderate": "normal",
-    "normal": "normal",
-    "severe": "stressed",
+    "mild": 0,
+    "moderate": 0,
+    "normal": 0,
+    "severe": 1,
 }
 
 
@@ -371,7 +371,7 @@ def create_dataset(
     target_cols="vegetation_stress_class",
     time_col="valid_time",
 ):
-    le = LabelEncoder()
+    # le = LabelEncoder()
 
     transform = Compose(
         [
@@ -408,9 +408,9 @@ def create_dataset(
             np.save(f, X_test)
         with open(train_input_dir + "/y_test.npy", "wb") as f:
             np.save(f, y_test)
-        y_train = le.fit_transform(y_train)
-        y_val = le.transform(y_val)
-        y_test = le.transform(y_test)
+        # y_train = le.fit_transform(y_train)
+        # y_val = le.transform(y_val)
+        # y_test = le.transform(y_test)
         means = np.mean(X_train, keepdims=True, axis=(0, 1))
         stds = np.std(X_train, keepdims=True, axis=(0, 1))
 
@@ -429,9 +429,9 @@ def create_dataset(
             y_train = np.vectorize(mapping.get)(y_train)
             y_val = np.vectorize(mapping.get)(y_val)
             y_test = np.vectorize(mapping.get)(y_test)
-        y_train = le.fit_transform(y_train)
-        y_val = le.transform(y_val)
-        y_test = le.transform(y_test)
+        # y_train = le.fit_transform(y_train)
+        # y_val = le.transform(y_val)
+        # y_test = le.transform(y_test)
         means = np.load(scaling_dir + "/means.npy")
         stds = np.load(scaling_dir + "/stds.npy")
 
