@@ -82,7 +82,7 @@ class LGBMClassifier_tuned:
         trial.set_user_attr("best_iteration", getattr(clf, "best_iteration_", None))
 
         # Optuna *minimizes*, so return negative to maximize AUCPR
-        return -ap
+        return ap
 
     def tune_hyperparams(self):
         study = optuna.create_study(direction="maximize")
@@ -92,9 +92,7 @@ class LGBMClassifier_tuned:
 
     def fit(self):
         self.tune_hyperparams()
-        X_trval = pd.concat([self.X_train, self.X_val], axis=0)
-        y_trval = pd.concat([self.y_train, self.y_val], axis=0)
-        cls_counts = y_trval.value_counts()
+        cls_counts = self.y_train.value_counts()
         class_weight = (cls_counts.max() / cls_counts).to_dict()
         self.final_clf = lgb.LGBMClassifier(
             n_estimators=self.best_iter,
@@ -102,7 +100,7 @@ class LGBMClassifier_tuned:
             random_state=self.random_state,
             **self.best_params
         )
-        self.final_clf.fit(X_trval, y_trval)
+        self.final_clf.fit(self.X_train, self.y_train)
         return self.final_clf
 
     # def predict(self, X_test):
