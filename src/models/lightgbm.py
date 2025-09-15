@@ -36,14 +36,14 @@ class LGBMClassifier_tuned:
             "objective": "binary",
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
             "num_leaves": trial.suggest_int("num_leaves", 31, 255),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 300),
+            "min_child_samples": trial.suggest_int("min_child_samples", 20, 300),
             "max_depth": trial.suggest_int("max_depth", -1, 16),
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.6, 1.0),
-            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.6, 1.0),
-            "bagging_freq": trial.suggest_int("bagging_freq", 0, 10),
-            "lambda_l1": trial.suggest_float("lambda_l1", 0.0, 10.0),
-            "lambda_l2": trial.suggest_float("lambda_l2", 0.0, 10.0),
-            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0.0, 0.5),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "subsample_freq": trial.suggest_int("subsample_freq", 0, 10),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 10.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 10.0),
+            "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.5),
             # Optional but helpful for imbalance:
             # "scale_pos_weight": float((self.y_train == 0).sum() / max(1, (self.y_train == 1).sum())),
         }
@@ -64,7 +64,7 @@ class LGBMClassifier_tuned:
             eval_set=[(self.X_val, self.y_val)],
             eval_metric=eval_metric_name,
             callbacks=[
-                lgb.early_stopping(stopping_rounds=300, verbose=False),
+                lgb.early_stopping(stopping_rounds=300, verbose=True),
                 LightGBMPruningCallback(trial, eval_metric_name),
             ],
         )
