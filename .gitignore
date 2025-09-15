@@ -209,3 +209,4 @@ __marimo__/
 data/drought_indices.csv
 data/ts_train
 experiments/weights
+data/drought_indices_clean.csv

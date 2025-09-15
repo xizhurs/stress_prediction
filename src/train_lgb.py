@@ -65,7 +65,7 @@ def train_lgb(
 y_test, y_pred_test_lgb = train_lgb(
     df,
     n_lags=12,
-    horizon=6,
+    horizon=1,
     keep_current=False,
     feat_vars=["tp_mm", "pet_mm", "T_c", "ndvi"],
     target_col="vegetation_stress_class",
