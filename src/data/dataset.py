@@ -19,6 +19,8 @@ def create_grouped_sequences(
         "ndvi",
         "month_sin",
         "month_cos",
+        "latitude",
+        "longitude",
     ],  # e.g. ["tp_mm","pet_mm","T_c","ndvi","month_sin","month_cos"]
     target_cols="vegetation_stress_class",
     group_cols=("latitude", "longitude"),
@@ -47,6 +49,7 @@ def create_grouped_sequences(
         m = df["valid_time"].dt.month
         df["month_sin"] = np.sin(2 * np.pi * m / 12.0)
         df["month_cos"] = np.cos(2 * np.pi * m / 12.0)
+
     # Feature/target column resolution
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     if feature_cols is None:
@@ -156,7 +159,16 @@ def get_split(
     file="data/drought_indices.csv",
     seq_len: int = 12,
     horizon: int = 6,
-    feature_cols=("tp_mm", "pet_mm", "T_c", "ndvi", "month_sin", "month_cos"),
+    feature_cols=(
+        "tp_mm",
+        "pet_mm",
+        "T_c",
+        "ndvi",
+        "month_sin",
+        "month_cos",
+        "latitude",
+        "longitude",
+    ),
     target_cols: str = "vegetation_stress_class",
     time_col: str = "valid_time",
     enforce_monthly_continuity: bool = True,
@@ -340,11 +352,24 @@ mapping = {
 
 def create_dataset(
     processed=True,
+    seq_len=12,
     horizon=6,
     train_input_dir="data/ts_train/npy",
     ts_data="data/drought_indices.csv",
     scaling_dir="data/ts_train/scaler",
     binary_class=False,
+    feature_cols=(
+        "tp_mm",
+        "pet_mm",
+        "T_c",
+        "ndvi",
+        "month_sin",
+        "month_cos",
+        "latitude",
+        "longitude",
+    ),
+    target_cols="vegetation_stress_class",
+    time_col="valid_time",
 ):
     le = LabelEncoder()
 
@@ -359,7 +384,12 @@ def create_dataset(
     )
     if not processed:
         X_train, y_train, X_val, y_val, X_test, y_test = get_split(
-            file=ts_data, horizon=horizon
+            file=ts_data,
+            horizon=horizon,
+            seq_len=seq_len,
+            feature_cols=feature_cols,
+            target_cols=target_cols,
+            time_col=time_col,
         )
         if binary_class:
             y_train = np.vectorize(mapping.get)(y_train)
@@ -423,9 +453,22 @@ def create_dataset(
 if __name__ == "__main__":
     dataset_train, dataset_val, dataset_test, le = create_dataset(
         processed=False,
+        seq_len=36,
         horizon=1,
         train_input_dir="data/ts_train/npy",
         ts_data="data/drought_indices.csv",
         scaling_dir="data/ts_train/scaler",
         binary_class=False,
+        feature_cols=(
+            "tp_mm",
+            "pet_mm",
+            "T_c",
+            "ndvi",
+            "month_sin",
+            "month_cos",
+            "latitude",
+            "longitude",
+        ),
+        target_cols="vegetation_stress_class",
+        time_col="valid_time",
     )
