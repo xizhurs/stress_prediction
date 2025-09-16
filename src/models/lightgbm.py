@@ -2,7 +2,7 @@ import optuna
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score, average_precision_score
+from sklearn.metrics import f1_score, average_precision_score, log_loss
 from optuna.integration import LightGBMPruningCallback
 from functools import partial
 from sklearn.pipeline import Pipeline
@@ -34,7 +34,7 @@ class LGBMClassifier_tuned:
 
         params = {
             "objective": "binary",
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
             "num_leaves": trial.suggest_int("num_leaves", 31, 255),
             "min_child_samples": trial.suggest_int("min_child_samples", 20, 300),
             "max_depth": trial.suggest_int("max_depth", -1, 16),
@@ -52,11 +52,11 @@ class LGBMClassifier_tuned:
             n_estimators=20000,
             class_weight=class_weight,
             random_state=self.random_state,
-            **params
+            **params,
         )
 
         # Use a metric name supported by your LightGBM build
-        eval_metric_name = "average_precision"  # or "aucpr" if your build supports it
+        eval_metric_name = "binary_logloss"  # or "aucpr" if your build supports it
 
         clf.fit(
             self.X_train,
@@ -71,24 +71,27 @@ class LGBMClassifier_tuned:
 
         # Compute AUCPR on validation with sklearn for the objective value
         p_val = clf.predict_proba(self.X_val)[:, 1]
+        bls = log_loss(self.y_val, p_val)
         ap = average_precision_score(self.y_val, p_val)
 
         # Report to Optuna and allow pruning also here (belt & suspenders)
-        trial.report(ap, step=0)
+        trial.report(bls, step=0)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
         # Save best_iteration_
         trial.set_user_attr("best_iteration", getattr(clf, "best_iteration_", None))
-
-        # Optuna *minimizes*, so return negative to maximize AUCPR
-        return ap
+        trial.set_user_attr("average_precision", ap)
+        return bls
 
     def tune_hyperparams(self):
-        study = optuna.create_study(direction="maximize")
+        study = optuna.create_study(direction="minimize")
         study.optimize(self._objective, n_trials=self.n_trials, show_progress_bar=True)
         self.best_params = study.best_params
         self.best_iter = study.best_trial.user_attrs.get("best_iteration", 1000)
+        self.best_ap = study.best_trial.user_attrs.get("average_precision", None)
+        print(f"Best binary log loss: {study.best_value:.4f}")
+        print(f"Best average precision: {self.best_ap:.4f}")
 
     def fit(self):
         self.tune_hyperparams()
@@ -98,7 +101,7 @@ class LGBMClassifier_tuned:
             n_estimators=self.best_iter,
             class_weight=class_weight,
             random_state=self.random_state,
-            **self.best_params
+            **self.best_params,
         )
         self.final_clf.fit(self.X_train, self.y_train)
         return self.final_clf
