@@ -41,7 +41,7 @@ def feature_extraction(
     m = sup["valid_time"].dt.month
     sup["month_sin"] = np.sin(2 * np.pi * m / 12)
     sup["month_cos"] = np.cos(2 * np.pi * m / 12)
-    # If your target is categorical, keep as-is; for regression ensure numeric
+
     sup = sup.dropna(subset="y")
     X = sup.drop(columns=["y"])
     y = sup["y"]
