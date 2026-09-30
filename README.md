@@ -67,9 +67,37 @@ Training writes:
 - `model.pkl`: trusted internal model bundle containing the estimator,
   threshold, feature order, configuration, versions, metrics, and data hash.
 - `metrics.json`: validation and test metrics for inspection and automation.
+- `precision_recall.png`: validation and test precision-recall curves, including
+  the validation-selected operating point.
+- `confusion_matrix.png`: test predictions at the selected threshold.
+- `feature_importance.png`: the 20 most important LightGBM features.
 
 Only load `model.pkl` files produced by a trusted training run. Python pickle
 artifacts are not safe to load from untrusted sources.
+
+## Results
+
+The original research run shows the expected threshold trade-off and compares
+the LightGBM classifier with a logistic-regression baseline:
+
+| Validation threshold selection | Held-out test evaluation |
+| --- | --- |
+| ![Validation precision, recall, and F1 across classification thresholds](experiments/figures/F1_threshold_val.png) | ![Test confusion matrices and classification reports](experiments/figures/test_results.png) |
+
+These two panels are retained as **historical exploratory results**. They
+predate the packaged workflow and do not include the model bundle, data hash,
+seed, or dependency lock needed to claim them as the current benchmark.
+
+Every new `train-lgb` run now records the validation-selected threshold, split
+sizes, validation and test metrics, input-data SHA-256, package versions, and
+the three evaluation figures listed above. A benchmark should be reported from
+those run artifacts together with its command and `metrics.json`; this keeps
+the README results traceable rather than copying unverified numbers into it.
+
+The underlying ERA5 series provides useful context for the climate inputs and
+their seasonal structure:
+
+![Monthly ERA5 climate series for the Netherlands](data/figures/era5_netherlands_timeseries.png)
 
 ## Predict
 

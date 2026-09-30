@@ -18,6 +18,7 @@ import pandas as pd
 import sklearn
 from sklearn.metrics import (
     average_precision_score,
+    confusion_matrix,
     f1_score,
     precision_recall_curve,
     precision_score,
@@ -101,6 +102,80 @@ def _metrics(
     }
 
 
+def _save_evaluation_figures(
+    output_dir: Path,
+    *,
+    validation_target: pd.Series,
+    validation_probabilities: np.ndarray,
+    test_target: pd.Series,
+    test_probabilities: np.ndarray,
+    threshold: float,
+    classifier: lightgbm.LGBMClassifier,
+    feature_columns: list[str],
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(7, 5))
+    for name, target, probabilities in (
+        ("Validation", validation_target, validation_probabilities),
+        ("Test", test_target, test_probabilities),
+    ):
+        precision, recall, _ = precision_recall_curve(target, probabilities)
+        score = average_precision_score(target, probabilities)
+        axis.plot(recall, precision, label=f"{name} (AP={score:.3f})", linewidth=2)
+    threshold_predictions = (validation_probabilities >= threshold).astype(int)
+    axis.scatter(
+        recall_score(validation_target, threshold_predictions),
+        precision_score(validation_target, threshold_predictions, zero_division=0),
+        color="#c53d35",
+        label=f"Selected threshold ({threshold:.3f})",
+        zorder=3,
+    )
+    axis.set(xlabel="Recall", ylabel="Precision", title="Precision-recall performance")
+    axis.set_xlim(0, 1.01)
+    axis.set_ylim(0, 1.01)
+    axis.grid(alpha=0.2)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_dir / "precision_recall.png", dpi=160)
+    plt.close(figure)
+
+    test_predictions = (test_probabilities >= threshold).astype(int)
+    matrix = confusion_matrix(test_target, test_predictions, labels=[0, 1])
+    figure, axis = plt.subplots(figsize=(5.5, 5))
+    image = axis.imshow(matrix, cmap="Blues")
+    for row in range(2):
+        for column in range(2):
+            axis.text(column, row, str(matrix[row, column]), ha="center", va="center")
+    axis.set(
+        xticks=[0, 1],
+        yticks=[0, 1],
+        xticklabels=["No stress", "Stress"],
+        yticklabels=["No stress", "Stress"],
+        xlabel="Predicted class",
+        ylabel="True class",
+        title="Test confusion matrix",
+    )
+    figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+    figure.tight_layout()
+    figure.savefig(output_dir / "confusion_matrix.png", dpi=160)
+    plt.close(figure)
+
+    importance = pd.Series(
+        classifier.feature_importances_, index=feature_columns, dtype=float
+    ).nlargest(20)
+    figure, axis = plt.subplots(figsize=(8, max(4.5, len(importance) * 0.3)))
+    importance.sort_values().plot.barh(ax=axis, color="#3d6f8e")
+    axis.set(xlabel="Split importance", ylabel="", title="Top feature importances")
+    axis.grid(axis="x", alpha=0.2)
+    figure.tight_layout()
+    figure.savefig(output_dir / "feature_importance.png", dpi=160)
+    plt.close(figure)
+
+
 def train_lightgbm(config: TrainingConfig) -> Path:
     """Train, evaluate, and persist a complete LightGBM inference bundle."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -147,17 +222,30 @@ def train_lightgbm(config: TrainingConfig) -> Path:
         threads=config.threads,
     )
     validation_probabilities = np.asarray(classifier.predict_proba(validation_x))[:, 1]
+    test_probabilities = np.asarray(classifier.predict_proba(test_x))[:, 1]
     threshold = _select_threshold(validation_y, validation_probabilities)
     results = {
+        "decision_threshold": threshold,
+        "split_samples": {
+            "training": len(train_x),
+            "validation": len(validation_x),
+            "test": len(test_x),
+        },
         "validation": _metrics(validation_y, validation_probabilities, threshold),
-        "test": _metrics(
-            test_y,
-            np.asarray(classifier.predict_proba(test_x))[:, 1],
-            threshold,
-        ),
+        "test": _metrics(test_y, test_probabilities, threshold),
     }
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    _save_evaluation_figures(
+        config.output_dir,
+        validation_target=validation_y,
+        validation_probabilities=validation_probabilities,
+        test_target=test_y,
+        test_probabilities=test_probabilities,
+        threshold=threshold,
+        classifier=classifier,
+        feature_columns=list(train_x.columns),
+    )
     artifact_path = config.output_dir / "model.pkl"
     serializable_config = {
         **asdict(config),
