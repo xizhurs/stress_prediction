@@ -1,37 +1,101 @@
-# Drought Stress Detection
-A machine learning approach to detect and predict vegetation stress levels using NDVI-derived Vegetation Condition Index (VCI) and climate variables.
+# Drought Stress Prediction
 
-## Overview
-This project combines satellite-derived vegetation indices (NDVI) with ERA5 climate data to detect plant stress conditions, using LightGBM for prediction.
+Train a LightGBM classifier to forecast vegetation stress from monthly NDVI and
+ERA5 climate variables. The supported workflow is an internal, reproducible CLI
+application managed with `uv`.
 
-## Data Pipeline
-1. **Data Preprocessing**
-   - Merges ERA5 climate data with NDVI observations
-   - Reprojects NDVI to ERA5 grid (lat/lon coordinates)
-   - Aligns monthly timestamps
-   - Computes Vegetation Condition Index (VCI) per pixel & calendar month
+## Setup
 
-2. **Feature Engineering**
-   - VCI (Vegetation Condition Index): Normalized NDVI indicating vegetation health
-   - Climate variables from ERA5 (temperature, precipitation)
-   - Derived drought indices (SPI, TCI)
+Install `uv`, then create the locked Python 3.11 environment:
 
-3. **Model**
-   - Uses LightGBM for stress level classification
-   - Optimizes threshold selection on validation set
-   - Predicts binary stress/no-stress conditions
+```powershell
+uv sync --locked --group dev
+uv run stress-prediction --help
+```
 
-## Results
-### Validation Performance
-![Threshold Selection](experiments/figures/F1_threshold_val.png)
-*F1 score optimization for stress detection threshold*
+`pyproject.toml` defines compatible dependency ranges. `uv.lock` is committed
+and is the exact environment used by development and CI.
 
-### Test Set Performance
-![Test Results](experiments/figures/test_results.png)
-*Final model performance on test set*
+Optional dependencies are available for the geospatial pipeline and the
+experimental neural models:
 
-## Time Series Analysis
-![ERA5 Netherlands](data/figures/era5_netherlands_timeseries.png)
-*Time series of drought indicators and stress detection*
+```powershell
+uv sync --locked --extra geo
+uv sync --locked --extra nn
+```
 
-> **Status:** Work in progress. Adding transformer based models. 
+## Input Data
+
+LightGBM training expects a CSV with one monthly observation per spatial point:
+
+- `valid_time`
+- `latitude`
+- `longitude`
+- `vegetation_stress_class`
+- `tp_mm`
+- `pet_mm`
+- `T_c`
+- `ndvi`
+
+Supported stress labels are `normal`, `mild`, `moderate`, and `severe`.
+Duplicate `(latitude, longitude, valid_time)` observations, missing feature
+values, and unknown labels are rejected before training.
+
+Raw climate and vegetation datasets are not distributed in the Python package.
+Copernicus CDS credentials are required for ERA5 downloads.
+
+## Train
+
+```powershell
+uv run stress-prediction train-lgb `
+  --input data/drought_indices.csv `
+  --output-dir experiments/lightgbm `
+  --n-lags 12 `
+  --horizon 6 `
+  --validation-start 2016-01-01 `
+  --test-start 2019-01-01 `
+  --trials 30 `
+  --seed 42
+```
+
+Splits use the future label timestamp, rather than the feature timestamp, to
+prevent labels across a temporal cutoff from leaking into an earlier partition.
+The decision threshold is selected only from validation data.
+
+Training writes:
+
+- `model.pkl`: trusted internal model bundle containing the estimator,
+  threshold, feature order, configuration, versions, metrics, and data hash.
+- `metrics.json`: validation and test metrics for inspection and automation.
+
+Only load `model.pkl` files produced by a trusted training run. Python pickle
+artifacts are not safe to load from untrusted sources.
+
+## Predict
+
+Prediction input uses the same climate and location columns as training, but it
+does not need `vegetation_stress_class`:
+
+```powershell
+uv run stress-prediction predict `
+  --artifact experiments/lightgbm/model.pkl `
+  --input data/current_observations.csv `
+  --output experiments/lightgbm/predictions.csv
+```
+
+The output contains location, observation time, forecast target time, stress
+probability, and binary prediction. CSV and Parquet outputs are supported;
+Parquet requires the `geo` extra.
+
+## Development
+
+```powershell
+uv run ruff format --check src/stress_prediction tests
+uv run ruff check src/stress_prediction tests
+uv run mypy src/stress_prediction
+uv run pytest --cov=stress_prediction
+uv build
+```
+
+The PyTorch sequence models and the original geospatial preparation scripts are
+still experimental and are not part of the production support contract yet.

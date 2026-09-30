@@ -1,7 +1,0 @@
-numpy
-pandas
-xarray
-netCDF4
-rasterio
-rioxarray
-climate-indices
