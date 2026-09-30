@@ -50,4 +50,20 @@ def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
     assert artifact["threshold"] >= 0
     assert artifact["feature_columns"]
     assert artifact["data_sha256"]
-    assert set(metrics) == {"validation", "test"}
+    assert set(metrics) == {
+        "decision_threshold",
+        "split_samples",
+        "validation",
+        "test",
+    }
+    assert metrics["split_samples"] == {
+        "training": 33,
+        "validation": 36,
+        "test": 36,
+    }
+    for figure_name in (
+        "precision_recall.png",
+        "confusion_matrix.png",
+        "feature_importance.png",
+    ):
+        assert (output_dir / figure_name).stat().st_size > 0
