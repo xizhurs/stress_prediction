@@ -273,6 +273,20 @@ def evaluate_foundation(
             results["persistence_baseline"] = section
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "split": split,
+                    "label": targets[split].to_numpy(),
+                    "score": scores[split]["model"],
+                    "persistence_score": scores[split]["persistence"],
+                }
+            )
+            for split in targets
+        ],
+        ignore_index=True,
+    ).to_csv(config.output_dir / "predictions.csv", index=False)
     _save_classification_figures(
         config.output_dir,
         validation_target=targets["validation"],

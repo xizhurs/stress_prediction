@@ -67,3 +67,9 @@ def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
         "feature_importance.png",
     ):
         assert (output_dir / figure_name).stat().st_size > 0
+    predictions = pd.read_csv(output_dir / "predictions.csv")
+    assert predictions["split"].value_counts().to_dict() == {
+        "validation": 36,
+        "test": 36,
+    }
+    assert predictions["score"].between(0, 1).all()

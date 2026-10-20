@@ -75,6 +75,23 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Evaluate a fixed random subset of each split, for quick runs.",
         )
+    compare_parser = commands.add_parser(
+        "compare-models",
+        help="Plot validation thresholds and test confusion matrices per model.",
+    )
+    compare_parser.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        metavar="NAME=DIR",
+        help="A run directory containing predictions.csv; repeat for each model.",
+    )
+    compare_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/figures"),
+        help="Directory for the comparison figures.",
+    )
     predict_parser = commands.add_parser(
         "predict", help="Run batch prediction with a trained model bundle."
     )
@@ -132,6 +149,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
             evaluate_chronos2(Chronos2Config(**options))
+    elif args.command == "compare-models":
+        from stress_prediction.comparison import plot_model_comparison
+
+        runs: dict[str, Path] = {}
+        for item in args.run:
+            name, separator, directory = item.partition("=")
+            if not separator or not name or not directory:
+                parser.error(f"--run expects NAME=DIR, got {item!r}")
+            runs[name] = Path(directory)
+        for path in plot_model_comparison(runs, args.output_dir):
+            print(path)
     elif args.command == "predict":
         from stress_prediction.prediction import predict_file
 

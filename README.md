@@ -70,6 +70,7 @@ Training writes:
 - `model.pkl`: trusted internal model bundle containing the estimator,
   threshold, feature order, configuration, versions, metrics, and data hash.
 - `metrics.json`: validation and test metrics for inspection and automation.
+- `predictions.csv`: the validation and test label and score of every sample.
 - `precision_recall.png`: validation and test precision-recall curves, including
   the validation-selected operating point.
 - `confusion_matrix.png`: test predictions at the selected threshold.
@@ -156,6 +157,23 @@ most recent observation.
   its validation numbers. The foundation models were not tuned on any data
   beyond the threshold.
 
+The threshold curves and confusion matrices behind those numbers, rebuilt from
+each run's saved per-sample scores (`predictions.csv`):
+
+![Validation precision, recall and F1-score by threshold for each model](experiments/figures/F1_threshold_val_models.png)
+
+![Test confusion matrices for each model at its validation-selected threshold](experiments/figures/test_results_models.png)
+
+The curves explain why the F1 values are so close. LightGBM, Timestral-123M and
+Chronos-2 all reach near-perfect precision at roughly 0.5 recall, and
+persistence reaches the same recall. About half of the severe cases (52% of
+validation, 47% of test) were already severe in the last observed month, and
+nearly all of the samples Chronos-2 flags at its selected threshold (100% on
+validation, 99.5% on test) are of that kind. The models differ mainly in how
+well they rank the remaining cases, where stress newly appears, and none
+detects those with high precision. Timestral-28M instead selects a lower
+threshold that trades precision for recall.
+
 Caveats: each figure is a single run without confidence intervals. The
 foundation models use the default 12-month context and no fine-tuning. The stress
 labels come from NDVI extremes over 2003-2020, which include the validation and
@@ -178,7 +196,17 @@ uv run stress-prediction eval-timestral --input data/drought_indices_clean.csv `
   --output-dir experiments/timestral_123m --checkpoint mistralai/Timestral-123M
 uv run stress-prediction eval-chronos2 --input data/drought_indices_clean.csv `
   --output-dir experiments/chronos2
+uv run stress-prediction compare-models `
+  --run LightGBM=experiments/lightgbm `
+  --run Timestral-28M=experiments/timestral `
+  --run Timestral-123M=experiments/timestral_123m `
+  --run Chronos-2=experiments/chronos2 `
+  --output-dir experiments/figures
 ```
+
+Every `train-lgb` and `eval-*` run writes `predictions.csv` (split, label and
+score per sample), which `compare-models` reads. It refuses to plot runs that
+were not scored on the same samples.
 
 On a CPU, the foundation-model runs took about 31 minutes (Timestral-28M), 42
 minutes (Chronos-2) and 110 minutes (Timestral-123M). The three runs record the

@@ -76,5 +76,5 @@ packages = ["stress_prediction"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["optuna_integration.*", "sklearn", "sklearn.*", "timestral", "timestral.*", "chronos", "chronos.*", "tqdm"]
+module = ["optuna_integration.*", "sklearn", "sklearn.*", "timestral", "timestral.*", "chronos", "chronos.*", "seaborn", "tqdm"]
 ignore_missing_imports = true

@@ -102,6 +102,29 @@ def _metrics(
     }
 
 
+def _write_predictions(
+    path: Path,
+    *,
+    validation_target: pd.Series,
+    validation_probabilities: np.ndarray,
+    test_target: pd.Series,
+    test_probabilities: np.ndarray,
+) -> None:
+    """Save per-sample scores so figures can be rebuilt without re-running a model."""
+    pd.concat(
+        [
+            pd.DataFrame(
+                {"split": split, "label": target.to_numpy(), "score": probabilities}
+            )
+            for split, target, probabilities in (
+                ("validation", validation_target, validation_probabilities),
+                ("test", test_target, test_probabilities),
+            )
+        ],
+        ignore_index=True,
+    ).to_csv(path, index=False)
+
+
 def _save_classification_figures(
     output_dir: Path,
     *,
@@ -257,6 +280,13 @@ def train_lightgbm(config: TrainingConfig) -> Path:
     }
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    _write_predictions(
+        config.output_dir / "predictions.csv",
+        validation_target=validation_y,
+        validation_probabilities=validation_probabilities,
+        test_target=test_y,
+        test_probabilities=test_probabilities,
+    )
     _save_evaluation_figures(
         config.output_dir,
         validation_target=validation_y,
