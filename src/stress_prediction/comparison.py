@@ -1,4 +1,4 @@
-"""Side-by-side threshold and confusion-matrix figures for several model runs."""
+"""Side-by-side threshold, confusion-matrix and PR figures for several runs."""
 
 from __future__ import annotations
 
@@ -7,12 +7,20 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+)
 
 from stress_prediction.training.lightgbm import _select_threshold
 
 THRESHOLD_FIGURE = "F1_threshold_val_models.png"
 TEST_FIGURE = "test_results_models.png"
+PRECISION_RECALL_FIGURE = "precision_recall_models.png"
 THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
 
@@ -145,4 +153,42 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
     test_path = output_dir / TEST_FIGURE
     figure.savefig(test_path, dpi=160)
     plt.close(figure)
-    return [threshold_path, test_path]
+
+    figure, axes = plt.subplots(1, 2, figsize=(12.5, 5.2), sharey=True)
+    for axis, split in zip(axes, ("validation", "test"), strict=True):
+        for name, splits in loaded.items():
+            labels, scores = splits[split]
+            precision, recall, _ = precision_recall_curve(labels, scores)
+            (line,) = axis.plot(
+                recall,
+                precision,
+                linewidth=2,
+                label=f"{name} (AP={average_precision_score(labels, scores):.3f})",
+            )
+            selected = scores >= thresholds[name]
+            axis.scatter(
+                [recall_score(labels, selected)],
+                [precision_score(labels, selected, zero_division=0)],
+                color=line.get_color(),
+                edgecolor="black",
+                zorder=3,
+            )
+        base_rate = float(np.mean(splits[split][0]))
+        axis.axhline(
+            base_rate,
+            color="grey",
+            linestyle="--",
+            linewidth=1,
+            label=f"No skill ({base_rate:.2f})",
+        )
+        axis.set(title=split.capitalize(), xlabel="Recall", ylabel="Precision")
+        axis.set_xlim(0, 1.01)
+        axis.set_ylim(0, 1.02)
+        axis.grid(alpha=0.2)
+        axis.legend(loc="lower left")
+    figure.suptitle("Precision-recall curves (markers: validation-selected threshold)")
+    figure.tight_layout()
+    precision_recall_path = output_dir / PRECISION_RECALL_FIGURE
+    figure.savefig(precision_recall_path, dpi=160)
+    plt.close(figure)
+    return [threshold_path, test_path, precision_recall_path]

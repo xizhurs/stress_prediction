@@ -8,6 +8,7 @@ import pytest
 
 from stress_prediction.cli import main
 from stress_prediction.comparison import (
+    PRECISION_RECALL_FIGURE,
     TEST_FIGURE,
     THRESHOLD_FIGURE,
     plot_model_comparison,
@@ -38,7 +39,11 @@ def test_plot_model_comparison_writes_both_figures(tmp_path: Path) -> None:
 
     paths = plot_model_comparison(runs, tmp_path / "figures")
 
-    assert [path.name for path in paths] == [THRESHOLD_FIGURE, TEST_FIGURE]
+    assert [path.name for path in paths] == [
+        THRESHOLD_FIGURE,
+        TEST_FIGURE,
+        PRECISION_RECALL_FIGURE,
+    ]
     assert all(path.stat().st_size > 0 for path in paths)
 
 

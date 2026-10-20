@@ -164,6 +164,16 @@ each run's saved per-sample scores (`predictions.csv`):
 
 ![Test confusion matrices for each model at its validation-selected threshold](experiments/figures/test_results_models.png)
 
+![Validation and test precision-recall curves for each model](experiments/figures/precision_recall_models.png)
+
+In the precision-recall curves, the markers show each model's validation-selected
+threshold and the dashed line is the positive rate (a model with no skill). On
+the test split LightGBM and Chronos-2 overlap at precision 1.0 up to about 0.46
+recall, so LightGBM's higher test AP than Timestral-123M comes from that
+high-precision region; beyond about 0.5 recall the four curves are close, with
+LightGBM slightly lower between roughly 0.7 and 0.9 recall. On validation,
+Chronos-2 is above the other models everywhere beyond that region.
+
 The curves explain why the F1 values are so close. LightGBM, Timestral-123M and
 Chronos-2 all reach near-perfect precision at roughly 0.5 recall, and
 persistence reaches the same recall. About half of the severe cases (52% of
