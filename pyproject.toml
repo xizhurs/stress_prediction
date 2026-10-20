@@ -32,6 +32,14 @@ geo = [
     "xarray>=2025.1,<2027",
 ]
 nn = ["torch>=2.7,<3"]
+foundation = [
+    "timestral @ git+https://github.com/mistralai/timestral.git",
+    "torch>=2.7,<3",
+]
+chronos = [
+    "chronos-forecasting>=2.0,<3",
+    "torch>=2.7,<3",
+]
 
 [project.scripts]
 stress-prediction = "stress_prediction.cli:main"
@@ -44,6 +52,9 @@ dev = [
     "pytest-cov>=6,<8",
     "ruff>=0.11,<1",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stress_prediction"]
@@ -65,5 +76,5 @@ packages = ["stress_prediction"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["optuna_integration.*", "sklearn", "sklearn.*"]
+module = ["optuna_integration.*", "sklearn", "sklearn.*", "timestral", "timestral.*", "chronos", "chronos.*", "tqdm"]
 ignore_missing_imports = true

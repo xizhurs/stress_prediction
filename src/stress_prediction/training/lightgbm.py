@@ -102,7 +102,7 @@ def _metrics(
     }
 
 
-def _save_evaluation_figures(
+def _save_classification_figures(
     output_dir: Path,
     *,
     validation_target: pd.Series,
@@ -110,8 +110,6 @@ def _save_evaluation_figures(
     test_target: pd.Series,
     test_probabilities: np.ndarray,
     threshold: float,
-    classifier: lightgbm.LGBMClassifier,
-    feature_columns: list[str],
 ) -> None:
     import matplotlib
 
@@ -163,6 +161,29 @@ def _save_evaluation_figures(
     figure.tight_layout()
     figure.savefig(output_dir / "confusion_matrix.png", dpi=160)
     plt.close(figure)
+
+
+def _save_evaluation_figures(
+    output_dir: Path,
+    *,
+    validation_target: pd.Series,
+    validation_probabilities: np.ndarray,
+    test_target: pd.Series,
+    test_probabilities: np.ndarray,
+    threshold: float,
+    classifier: lightgbm.LGBMClassifier,
+    feature_columns: list[str],
+) -> None:
+    _save_classification_figures(
+        output_dir,
+        validation_target=validation_target,
+        validation_probabilities=validation_probabilities,
+        test_target=test_target,
+        test_probabilities=test_probabilities,
+        threshold=threshold,
+    )
+
+    import matplotlib.pyplot as plt
 
     importance = pd.Series(
         classifier.feature_importances_, index=feature_columns, dtype=float
