@@ -42,6 +42,56 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--trials", type=int, default=30)
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.add_argument("--threads", type=int, default=1)
+    for command, model, checkpoint in (
+        ("eval-timestral", "Timestral", "mistralai/Timestral-28M"),
+        ("eval-chronos2", "Chronos-2", "amazon/chronos-2"),
+    ):
+        eval_parser = commands.add_parser(
+            command,
+            help=f"Zero-shot evaluate {model} on the same splits and metrics.",
+        )
+        eval_parser.add_argument(
+            "--input",
+            type=Path,
+            default=Path("data/drought_indices.csv"),
+            help="Input CSV containing monthly climate and vegetation observations.",
+        )
+        eval_parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=Path(f"experiments/{command.removeprefix('eval-')}"),
+            help="Directory for the metrics and figures.",
+        )
+        eval_parser.add_argument("--checkpoint", default=checkpoint)
+        eval_parser.add_argument("--n-lags", type=int, default=12)
+        eval_parser.add_argument("--horizon", type=int, default=6)
+        eval_parser.add_argument("--validation-start", default="2016-01-01")
+        eval_parser.add_argument("--test-start", default="2019-01-01")
+        eval_parser.add_argument("--batch-size", type=int, default=512)
+        eval_parser.add_argument("--device", default="cpu")
+        eval_parser.add_argument(
+            "--max-samples",
+            type=int,
+            default=None,
+            help="Evaluate a fixed random subset of each split, for quick runs.",
+        )
+    compare_parser = commands.add_parser(
+        "compare-models",
+        help="Plot validation thresholds and test confusion matrices per model.",
+    )
+    compare_parser.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        metavar="NAME=DIR",
+        help="A run directory containing predictions.csv; repeat for each model.",
+    )
+    compare_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/figures"),
+        help="Directory for the comparison figures.",
+    )
     predict_parser = commands.add_parser(
         "predict", help="Run batch prediction with a trained model bundle."
     )
@@ -72,6 +122,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             threads=args.threads,
         )
         train_lightgbm(config)
+    elif args.command in {"eval-timestral", "eval-chronos2"}:
+        options = {
+            "input_path": args.input,
+            "output_dir": args.output_dir,
+            "checkpoint": args.checkpoint,
+            "n_lags": args.n_lags,
+            "horizon": args.horizon,
+            "validation_start": args.validation_start,
+            "test_start": args.test_start,
+            "batch_size": args.batch_size,
+            "device": args.device,
+            "max_samples": args.max_samples,
+        }
+        if args.command == "eval-timestral":
+            from stress_prediction.training.timestral import (
+                TimestralConfig,
+                evaluate_timestral,
+            )
+
+            evaluate_timestral(TimestralConfig(**options))
+        else:
+            from stress_prediction.training.chronos2 import (
+                Chronos2Config,
+                evaluate_chronos2,
+            )
+
+            evaluate_chronos2(Chronos2Config(**options))
+    elif args.command == "compare-models":
+        from stress_prediction.comparison import plot_model_comparison
+
+        runs: dict[str, Path] = {}
+        for item in args.run:
+            name, separator, directory = item.partition("=")
+            if not separator or not name or not directory:
+                parser.error(f"--run expects NAME=DIR, got {item!r}")
+            runs[name] = Path(directory)
+        for path in plot_model_comparison(runs, args.output_dir):
+            print(path)
     elif args.command == "predict":
         from stress_prediction.prediction import predict_file
 

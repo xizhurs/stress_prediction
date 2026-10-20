@@ -16,12 +16,15 @@ uv run stress-prediction --help
 `pyproject.toml` defines compatible dependency ranges. `uv.lock` is committed
 and is the exact environment used by development and CI.
 
-Optional dependencies are available for the geospatial pipeline and the
-experimental neural models:
+Optional dependencies are available for the geospatial pipeline, the
+experimental neural models and the Timestral and Chronos-2 foundation-model
+evaluations:
 
 ```powershell
 uv sync --locked --extra geo
 uv sync --locked --extra nn
+uv sync --locked --extra foundation
+uv sync --locked --extra chronos
 ```
 
 ## Input Data
@@ -67,6 +70,7 @@ Training writes:
 - `model.pkl`: trusted internal model bundle containing the estimator,
   threshold, feature order, configuration, versions, metrics, and data hash.
 - `metrics.json`: validation and test metrics for inspection and automation.
+- `predictions.csv`: the validation and test label and score of every sample.
 - `precision_recall.png`: validation and test precision-recall curves, including
   the validation-selected operating point.
 - `confusion_matrix.png`: test predictions at the selected threshold.
@@ -75,7 +79,150 @@ Training writes:
 Only load `model.pkl` files produced by a trusted training run. Python pickle
 artifacts are not safe to load from untrusted sources.
 
+## Evaluate foundation models (zero-shot)
+
+`eval-timestral` and `eval-chronos2` score pretrained forecasters on the same
+samples, temporal splits, threshold selection and metrics as `train-lgb`.
+Nothing is trained. Each model has its own extra and downloads its checkpoint
+on first use:
+
+| Command | Extra | Default checkpoint |
+| --- | --- | --- |
+| `eval-timestral` | `foundation` | [`mistralai/Timestral-28M`](https://huggingface.co/mistralai/Timestral-28M) |
+| `eval-chronos2` | `chronos` | [`amazon/chronos-2`](https://huggingface.co/amazon/chronos-2) |
+
+```powershell
+uv sync --locked --extra foundation
+uv run stress-prediction eval-timestral `
+  --input data/drought_indices.csv `
+  --output-dir experiments/timestral `
+  --checkpoint mistralai/Timestral-28M `
+  --n-lags 12 `
+  --horizon 6
+```
+
+Use `--max-samples N` to evaluate a fixed random subset of each split for a
+quick check; omit it for results comparable with `train-lgb`.
+
+For each sample, the last `--n-lags` months of NDVI form the forecast context,
+with precipitation, PET and temperature as past covariates and the month
+encoding as known-future covariates. Timestral forecasts NDVI quantiles at the
+label month. The stress score is the probability that the forecast NDVI falls
+below the severe-VCI limit, `P(NDVI <= ndvi_min + 0.25 * (ndvi_max - ndvi_min))`,
+using the per-pixel monthly NDVI extremes from the label baseline (2003-2020).
+The run checks that this rule reproduces the dataset's labels
+(`label_rule_agreement` in `metrics.json`) before scoring.
+
+`metrics.json` also reports a `persistence_baseline`, which scores each sample
+by the stress of the last observed month. Compare Timestral against it as well
+as against LightGBM. The baseline year range overlaps the validation and test
+years because that is how the labels were defined, so absolute scores should be
+compared only between methods evaluated on the same labels.
+
 ## Results
+
+### Model comparison
+
+Forecasting vegetation stress six months ahead (severe stress is the positive
+class) with 12 months of history. All four models were scored on the same
+24,516 validation and 32,688 test samples (681 grid cells, split by label month:
+validation 2016-2018, test 2019 onward). The decision threshold is the F1-optimal
+one on validation for every model. Numbers are copied from each run's
+`metrics.json`.
+
+| Model | Training | Val AP | Val ROC-AUC | Test AP | Test ROC-AUC | Test precision / recall / F1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| LightGBM | tuned, 30 Optuna trials | 0.652 | 0.721 | 0.703 | 0.793 | 1.00 / 0.46 / 0.63 |
+| Timestral-28M | zero-shot | 0.633 | 0.813 | 0.526 | 0.792 | 0.65 / 0.54 / 0.59 |
+| Timestral-123M | zero-shot | 0.715 | 0.835 | 0.653 | 0.814 | 0.86 / 0.49 / 0.62 |
+| Chronos-2 (120M) | zero-shot | **0.735** | **0.854** | **0.717** | **0.824** | 0.99 / 0.46 / 0.63 |
+| Persistence baseline | none | 0.612 | 0.708 | 0.424 | 0.616 | 0.64 / 0.46 / 0.53 |
+
+AP is average precision. The persistence baseline scores each sample by the
+stress of the last observed month, so it shows how much a model gains beyond the
+most recent observation.
+
+- Chronos-2 has the best ranking quality (AP and ROC-AUC) on both splits, with
+  no training. Its test AP lead over LightGBM (0.717 against 0.703) is small and
+  within what one run on spatially correlated cells can produce; its ROC-AUC
+  lead on both splits and its validation AP lead are larger.
+- Timestral improves with size: 28M to 123M raises test AP from 0.526 to 0.653
+  and test ROC-AUC from 0.792 to 0.814. Timestral-123M ranks above LightGBM on
+  ROC-AUC on both splits but below it on test AP.
+- Test F1 is within 0.01 for LightGBM, Timestral-123M and Chronos-2. All three
+  select thresholds at the high-precision end of the curve, so F1 hides the
+  ranking differences above; use the precision-recall figures for operating
+  points.
+- LightGBM's hyperparameters were tuned on the validation split, which favours
+  its validation numbers. The foundation models were not tuned on any data
+  beyond the threshold.
+
+The threshold curves and confusion matrices behind those numbers, rebuilt from
+each run's saved per-sample scores (`predictions.csv`):
+
+![Validation precision, recall and F1-score by threshold for each model](experiments/figures/F1_threshold_val_models.png)
+
+![Test confusion matrices for each model at its validation-selected threshold](experiments/figures/test_results_models.png)
+
+![Validation and test precision-recall curves for each model](experiments/figures/precision_recall_models.png)
+
+In the precision-recall curves, the markers show each model's validation-selected
+threshold and the dashed line is the positive rate (a model with no skill). On
+the test split LightGBM and Chronos-2 overlap at precision 1.0 up to about 0.46
+recall, so LightGBM's higher test AP than Timestral-123M comes from that
+high-precision region; beyond about 0.5 recall the four curves are close, with
+LightGBM slightly lower between roughly 0.7 and 0.9 recall. On validation,
+Chronos-2 is above the other models everywhere beyond that region.
+
+The curves explain why the F1 values are so close. LightGBM, Timestral-123M and
+Chronos-2 all reach near-perfect precision at roughly 0.5 recall, and
+persistence reaches the same recall. About half of the severe cases (52% of
+validation, 47% of test) were already severe in the last observed month, and
+nearly all of the samples Chronos-2 flags at its selected threshold (100% on
+validation, 99.5% on test) are of that kind. The models differ mainly in how
+well they rank the remaining cases, where stress newly appears, and none
+detects those with high precision. Timestral-28M instead selects a lower
+threshold that trades precision for recall.
+
+Caveats: each figure is a single run without confidence intervals. The
+foundation models use the default 12-month context and no fine-tuning. The stress
+labels come from NDVI extremes over 2003-2020, which include the validation and
+test years, so absolute scores are only comparable between models scored on the
+same labels.
+
+To reproduce, regenerate `data/drought_indices.csv` with
+`src/features/compute_drought_composite.py` (the example flags in its docstring,
+`--start 1982-01 --end 2022-12 --out data/drought_indices.csv`). Then drop the
+cells with any missing feature or label (178 cells without ERA5 values and 24
+without NDVI, leaving 681 of 864), which `train-lgb` rejects, and save the
+result as `data/drought_indices_clean.csv`:
+
+```powershell
+uv run stress-prediction train-lgb --input data/drought_indices_clean.csv `
+  --output-dir experiments/lightgbm --threads 4
+uv run stress-prediction eval-timestral --input data/drought_indices_clean.csv `
+  --output-dir experiments/timestral
+uv run stress-prediction eval-timestral --input data/drought_indices_clean.csv `
+  --output-dir experiments/timestral_123m --checkpoint mistralai/Timestral-123M
+uv run stress-prediction eval-chronos2 --input data/drought_indices_clean.csv `
+  --output-dir experiments/chronos2
+uv run stress-prediction compare-models `
+  --run LightGBM=experiments/lightgbm `
+  --run Timestral-28M=experiments/timestral `
+  --run Timestral-123M=experiments/timestral_123m `
+  --run Chronos-2=experiments/chronos2 `
+  --output-dir experiments/figures
+```
+
+Every `train-lgb` and `eval-*` run writes `predictions.csv` (split, label and
+score per sample), which `compare-models` reads. It refuses to plot runs that
+were not scored on the same samples.
+
+On a CPU, the foundation-model runs took about 31 minutes (Timestral-28M), 42
+minutes (Chronos-2) and 110 minutes (Timestral-123M). The three runs record the
+same SHA-256 for the cleaned CSV (`65c32932...`) in their `metrics.json`.
+
+### Historical exploratory results
 
 The original research run shows the expected threshold trade-off and compares
 the LightGBM classifier with a logistic-regression baseline:
