@@ -6,8 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from stress_prediction.training.lightgbm import TrainingConfig, train_lightgbm
+from stress_prediction.training.lightgbm import (
+    TrainingConfig,
+    _select_threshold,
+    train_lightgbm,
+)
 
 
 def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
@@ -40,6 +45,7 @@ def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
             trials=1,
             seed=7,
             threads=1,
+            spatial_block_size=None,
         )
     )
 
@@ -52,6 +58,7 @@ def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
     assert artifact["data_sha256"]
     assert set(metrics) == {
         "decision_threshold",
+        "recall_target",
         "split_samples",
         "validation",
         "test",
@@ -73,3 +80,24 @@ def test_train_lightgbm_writes_complete_artifact(tmp_path: Path) -> None:
         "test": 36,
     }
     assert predictions["score"].between(0, 1).all()
+
+
+def test_select_threshold_is_most_precise_threshold_reaching_recall_target() -> None:
+    target = pd.Series([1, 1, 0, 1, 0, 0, 1, 0])
+    scores = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2])
+
+    # Recall of 0.5 is first reached at 0.8 (2 of 4), where precision is 1.0.
+    assert _select_threshold(target, scores, 0.5) == 0.8
+    # Full recall needs every positive, so the lowest positive score is the limit.
+    assert _select_threshold(target, scores, 1.0) == 0.3
+    # A lower threshold with equal precision recalls more, so ties go lowest.
+    tied = pd.Series([1, 1, 1, 0])
+    assert _select_threshold(tied, np.array([0.9, 0.8, 0.7, 0.1]), 0.5) == 0.7
+
+
+def test_select_threshold_rejects_invalid_recall_targets() -> None:
+    target = pd.Series([1, 0, 1, 0])
+    scores = np.array([0.9, 0.8, 0.7, 0.1])
+    for recall_target in (0.0, 1.5):
+        with pytest.raises(ValueError, match="recall_target"):
+            _select_threshold(target, scores, recall_target)

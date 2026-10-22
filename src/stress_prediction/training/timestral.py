@@ -10,6 +10,7 @@ import numpy as np
 
 from stress_prediction.training.foundation import (
     FoundationConfig,
+    QuantileForecaster,
     evaluate_foundation,
     package_version,
     to_numpy,
@@ -32,10 +33,8 @@ def _load_forecaster(checkpoint: str, device: str) -> Any:
     return TimestralForecaster.from_pretrained(checkpoint, device=device)
 
 
-def evaluate_timestral(config: TimestralConfig, forecaster: Any | None = None) -> Path:
-    """Zero-shot evaluate Timestral with the LightGBM data splits and metrics."""
-    if forecaster is None:
-        forecaster = _load_forecaster(config.checkpoint, config.device)
+def timestral_forecaster(forecaster: Any) -> QuantileForecaster:
+    """Adapt a Timestral forecaster to the NDVI quantile forecaster interface."""
 
     def forecast(
         ndvi: np.ndarray, covariates: np.ndarray, known: np.ndarray, length: int
@@ -49,9 +48,17 @@ def evaluate_timestral(config: TimestralConfig, forecaster: Any | None = None) -
         quantiles = to_numpy(result.quantiles)  # (B, variates, steps, levels)
         return quantiles[:, 0, -1, :], to_numpy(result.quantile_levels)
 
+    return forecast
+
+
+def evaluate_timestral(config: TimestralConfig, forecaster: Any | None = None) -> Path:
+    """Zero-shot evaluate Timestral with the LightGBM data splits and metrics."""
+    if forecaster is None:
+        forecaster = _load_forecaster(config.checkpoint, config.device)
+
     return evaluate_foundation(
         config,
-        forecast,
+        timestral_forecaster(forecaster),
         name="Timestral",
         model_info={"timestral_version": package_version("timestral")},
     )

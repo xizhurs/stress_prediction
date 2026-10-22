@@ -11,6 +11,7 @@ import numpy as np
 from stress_prediction.training.foundation import (
     COVARIATE_COLUMNS,
     FoundationConfig,
+    QuantileForecaster,
     evaluate_foundation,
     package_version,
     to_numpy,
@@ -34,10 +35,8 @@ def _load_pipeline(checkpoint: str, device: str) -> Any:
     return Chronos2Pipeline.from_pretrained(checkpoint, device_map=device)
 
 
-def evaluate_chronos2(config: Chronos2Config, pipeline: Any | None = None) -> Path:
-    """Zero-shot evaluate Chronos-2 with the LightGBM data splits and metrics."""
-    if pipeline is None:
-        pipeline = _load_pipeline(config.checkpoint, config.device)
+def chronos2_forecaster(pipeline: Any, batch_size: int) -> QuantileForecaster:
+    """Adapt a Chronos-2 pipeline to the NDVI quantile forecaster interface."""
     levels = np.asarray(pipeline.quantiles, dtype=np.float64)
 
     def forecast(
@@ -62,15 +61,23 @@ def evaluate_chronos2(config: Chronos2Config, pipeline: Any | None = None) -> Pa
                 }
             )
         predictions = pipeline.predict(
-            inputs, prediction_length=length, batch_size=config.batch_size
+            inputs, prediction_length=length, batch_size=batch_size
         )
         # Each item is (variates, levels, steps); keep NDVI at the final step.
         quantiles = np.stack([to_numpy(item)[0, :, -1] for item in predictions])
         return quantiles, levels
 
+    return forecast
+
+
+def evaluate_chronos2(config: Chronos2Config, pipeline: Any | None = None) -> Path:
+    """Zero-shot evaluate Chronos-2 with the LightGBM data splits and metrics."""
+    if pipeline is None:
+        pipeline = _load_pipeline(config.checkpoint, config.device)
+
     return evaluate_foundation(
         config,
-        forecast,
+        chronos2_forecaster(pipeline, config.batch_size),
         name="Chronos-2",
         model_info={
             "chronos_forecasting_version": package_version("chronos-forecasting")

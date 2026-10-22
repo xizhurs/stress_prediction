@@ -63,7 +63,19 @@ uv run stress-prediction train-lgb `
 
 Splits use the future label timestamp, rather than the feature timestamp, to
 prevent labels across a temporal cutoff from leaking into an earlier partition.
-The decision threshold is selected only from validation data.
+They are also spatial: the grid is cut into `--spatial-block-size` degree blocks
+(default 0.5), and whole blocks are held out so that about 70% / 15% / 15% of the
+locations belong to training / validation / test. Each partition keeps only its
+own locations within its own period, so validation and test cells are never seen
+in training. The block assignment is seeded and shared by every command, and
+`latitude` and `longitude` are not model features. Pass `--spatial-block-size 0`
+for a time-only split.
+
+The decision threshold is chosen on validation data only: the most precise
+threshold whose recall reaches `--recall-target` (default 0.8). Missing a stress
+event costs more than a false alarm, so the rule fixes the recall to deliver and
+maximises precision subject to it. On these data the F2 optimum instead lands on
+a very high-precision, low-recall point for LightGBM (see the model comparison).
 
 Training writes:
 
@@ -82,7 +94,8 @@ artifacts are not safe to load from untrusted sources.
 ## Evaluate foundation models (zero-shot)
 
 `eval-timestral` and `eval-chronos2` score pretrained forecasters on the same
-samples, temporal splits, threshold selection and metrics as `train-lgb`.
+samples, temporal and spatial splits, threshold selection and metrics as
+`train-lgb`.
 Nothing is trained. Each model has its own extra and downloads its checkpoint
 on first use:
 
@@ -124,71 +137,87 @@ compared only between methods evaluated on the same labels.
 ### Model comparison
 
 Forecasting vegetation stress six months ahead (severe stress is the positive
-class) with 12 months of history. All four models were scored on the same
-24,516 validation and 32,688 test samples (681 grid cells, split by label month:
-validation 2016-2018, test 2019 onward). The decision threshold is the F1-optimal
-one on validation for every model. Numbers are copied from each run's
-`metrics.json`.
+class). LightGBM uses 12 months of history (and a 36-lag variant) and the
+zero-shot models a 36-month context. All models were scored on the same 3,672
+validation and 4,368 test samples, which come from held-out locations (102 and 91
+of the 681 grid cells) and from label months 2016-2018 and 2019 onward
+respectively. LightGBM trains on 190,320 samples from the remaining 488 cells
+before 2016. The decision threshold is the most precise one on validation that
+reaches a recall of 0.8, for every model.
 
-| Model | Training | Val AP | Val ROC-AUC | Test AP | Test ROC-AUC | Test precision / recall / F1 |
+Model scores come from `experiments/spatial/`. The `metrics.json` files there
+were written when thresholds were still chosen by F2, so their thresholds and
+precision / recall differ from the table below; their AP and ROC-AUC do not,
+because those do not depend on the threshold. The table is
+`experiments/spatial_recall/comparison_metrics.csv`, which `compare-models`
+recomputes from the saved per-sample scores for any `--recall-target`, without
+re-running a model.
+
+| Model | Training | Val AP | Val ROC-AUC | Test AP | Test ROC-AUC | Test precision / recall / F2 |
 | --- | --- | --- | --- | --- | --- | --- |
-| LightGBM | tuned, 30 Optuna trials | 0.652 | 0.721 | 0.703 | 0.793 | 1.00 / 0.46 / 0.63 |
-| Timestral-28M | zero-shot | 0.633 | 0.813 | 0.526 | 0.792 | 0.65 / 0.54 / 0.59 |
-| Timestral-123M | zero-shot | 0.715 | 0.835 | 0.653 | 0.814 | 0.86 / 0.49 / 0.62 |
-| Chronos-2 (120M) | zero-shot | **0.735** | **0.854** | **0.717** | **0.824** | 0.99 / 0.46 / 0.63 |
-| Persistence baseline | none | 0.612 | 0.708 | 0.424 | 0.616 | 0.64 / 0.46 / 0.53 |
+| LightGBM, 12 lags | tuned, 30 Optuna trials | 0.851 | 0.839 | 0.709 | 0.785 | 0.39 / 0.70 / 0.60 |
+| LightGBM, 36 lags | tuned, 30 Optuna trials | 0.861 | 0.857 | 0.671 | 0.762 | 0.44 / 0.61 / 0.56 |
+| Timestral-28M | zero-shot | 0.882 | 0.894 | 0.725 | 0.835 | 0.39 / 0.80 / 0.66 |
+| Timestral-123M | zero-shot | 0.882 | 0.898 | 0.721 | 0.831 | 0.39 / 0.77 / 0.64 |
+| Chronos-2 (120M) | zero-shot | 0.882 | 0.891 | 0.717 | 0.817 | 0.38 / 0.75 / 0.63 |
+| Persistence baseline | none | 0.835 | 0.846 | 0.435 | 0.625 | 0.25 / 0.55 / 0.44 |
 
 AP is average precision. The persistence baseline scores each sample by the
 stress of the last observed month, so it shows how much a model gains beyond the
-most recent observation.
+most recent observation. Its threshold is selected with the same rule from the
+`persistence_score` column of the zero-shot runs' `predictions.csv`.
 
-- Chronos-2 has the best ranking quality (AP and ROC-AUC) on both splits, with
-  no training. Its test AP lead over LightGBM (0.717 against 0.703) is small and
-  within what one run on spatially correlated cells can produce; its ROC-AUC
-  lead on both splits and its validation AP lead are larger.
-- Timestral improves with size: 28M to 123M raises test AP from 0.526 to 0.653
-  and test ROC-AUC from 0.792 to 0.814. Timestral-123M ranks above LightGBM on
-  ROC-AUC on both splits but below it on test AP.
-- Test F1 is within 0.01 for LightGBM, Timestral-123M and Chronos-2. All three
-  select thresholds at the high-precision end of the curve, so F1 hides the
-  ranking differences above; use the precision-recall figures for operating
-  points.
-- LightGBM's hyperparameters were tuned on the validation split, which favours
-  its validation numbers. The foundation models were not tuned on any data
-  beyond the threshold.
+For comparison, selecting by F2 instead gave these test operating points:
 
-The threshold curves and confusion matrices behind those numbers, rebuilt from
-each run's saved per-sample scores (`predictions.csv`):
+| Model | F2-selected threshold | Test precision / recall / F2 | Recall-target threshold | Test precision / recall / F2 |
+| --- | --- | --- | --- | --- |
+| LightGBM, 12 lags | 0.999 | 1.00 / 0.48 / 0.54 | 0.222 | 0.39 / 0.70 / 0.60 |
+| LightGBM, 36 lags | 0.999 | 1.00 / 0.48 / 0.54 | 0.206 | 0.44 / 0.61 / 0.56 |
+| Timestral-28M | 0.301 | 0.44 / 0.70 / 0.62 | 0.251 | 0.39 / 0.80 / 0.66 |
+| Timestral-123M | 0.453 | 0.69 / 0.55 / 0.58 | 0.254 | 0.39 / 0.77 / 0.64 |
+| Chronos-2 (120M) | 0.225 | 0.41 / 0.70 / 0.62 | 0.181 | 0.38 / 0.75 / 0.63 |
+| Persistence baseline | 0.810 | 0.52 / 0.49 / 0.50 | 0.331 | 0.25 / 0.55 / 0.44 |
 
-![Validation precision, recall and F1-score by threshold for each model](experiments/figures/F1_threshold_val_models.png)
+- Every model reaches a validation recall of 0.8 by construction, with validation
+  precision between 0.50 (LightGBM, 12 lags) and 0.71 (Chronos-2). On test the
+  recall drops, and by different amounts: Timestral-28M keeps 0.80, Timestral-123M
+  0.77 and Chronos-2 0.75, against 0.70 for LightGBM with 12 lags and 0.61 with 36
+  lags. At that recall, precision is 0.38-0.44 for all models.
+- The recall-target rule gives LightGBM a usable operating point (precision 0.39,
+  recall 0.70) where the F2 rule picked a threshold of 0.999 with recall 0.48.
+  Its test F2 rises from 0.54 to 0.60 and the zero-shot models' from 0.58-0.62 to
+  0.63-0.66. The zero-shot models still lead on F2, ROC-AUC and recall retention,
+  while their test AP lead over LightGBM (0.717-0.725 against 0.709) is small and
+  each figure is one run on 91 test cells.
+- Timestral-28M and Timestral-123M perform alike here.
+- Using 36 instead of 12 lags did not help LightGBM: validation is slightly
+  better, test is worse, and it has 12% fewer training samples.
+- Persistence is close to the models on validation (AP 0.835) but far below them
+  on test (AP 0.435), so the validation split alone is a weak yardstick.
 
-![Test confusion matrices for each model at its validation-selected threshold](experiments/figures/test_results_models.png)
+The threshold curves, confusion matrices and precision-recall curves behind the
+first table, rebuilt from each run's saved per-sample scores (`predictions.csv`):
 
-![Validation and test precision-recall curves for each model](experiments/figures/precision_recall_models.png)
+![Validation precision, recall and F2-score by threshold for each model](experiments/spatial_recall/threshold_val_models.png)
+
+![Test confusion matrices for each model at its validation-selected threshold](experiments/spatial_recall/test_results_models.png)
+
+![Validation and test precision-recall curves for each model](experiments/spatial_recall/precision_recall_models.png)
 
 In the precision-recall curves, the markers show each model's validation-selected
-threshold and the dashed line is the positive rate (a model with no skill). On
-the test split LightGBM and Chronos-2 overlap at precision 1.0 up to about 0.46
-recall, so LightGBM's higher test AP than Timestral-123M comes from that
-high-precision region; beyond about 0.5 recall the four curves are close, with
-LightGBM slightly lower between roughly 0.7 and 0.9 recall. On validation,
-Chronos-2 is above the other models everywhere beyond that region.
+threshold and the dashed line is the positive rate (a model with no skill). All
+models keep precision 1.0 up to about 0.74 recall on validation and about 0.48 on
+test. Beyond that point the curves separate: on validation the zero-shot models
+are above LightGBM, and on test LightGBM with 12 lags is slightly higher between
+roughly 0.5 and 0.65 recall and lower beyond about 0.7, where the markers sit.
 
-The curves explain why the F1 values are so close. LightGBM, Timestral-123M and
-Chronos-2 all reach near-perfect precision at roughly 0.5 recall, and
-persistence reaches the same recall. About half of the severe cases (52% of
-validation, 47% of test) were already severe in the last observed month, and
-nearly all of the samples Chronos-2 flags at its selected threshold (100% on
-validation, 99.5% on test) are of that kind. The models differ mainly in how
-well they rank the remaining cases, where stress newly appears, and none
-detects those with high precision. Timestral-28M instead selects a lower
-threshold that trades precision for recall.
-
-Caveats: each figure is a single run without confidence intervals. The
-foundation models use the default 12-month context and no fine-tuning. The stress
-labels come from NDVI extremes over 2003-2020, which include the validation and
-test years, so absolute scores are only comparable between models scored on the
-same labels.
+Caveats: each figure is a single run with one random block assignment and no
+confidence intervals. LightGBM's features include the VCI of the sample month,
+while the zero-shot context ends one month earlier, so LightGBM sees one more
+month of observations. The stress labels come from NDVI extremes over 2003-2020,
+which include the validation and test years, so absolute scores are only
+comparable between models scored on the same labels. Earlier runs under a
+time-only split are not comparable with these results.
 
 To reproduce, regenerate `data/drought_indices.csv` with
 `src/features/compute_drought_composite.py` (the example flags in its docstring,
@@ -199,28 +228,33 @@ result as `data/drought_indices_clean.csv`:
 
 ```powershell
 uv run stress-prediction train-lgb --input data/drought_indices_clean.csv `
-  --output-dir experiments/lightgbm --threads 4
+  --output-dir experiments/spatial/lightgbm_lag12 --n-lags 12 --threads 4
+uv run stress-prediction train-lgb --input data/drought_indices_clean.csv `
+  --output-dir experiments/spatial/lightgbm_lag36 --n-lags 36 --threads 4
 uv run stress-prediction eval-timestral --input data/drought_indices_clean.csv `
-  --output-dir experiments/timestral
+  --output-dir experiments/spatial/timestral_28m --n-lags 36
 uv run stress-prediction eval-timestral --input data/drought_indices_clean.csv `
-  --output-dir experiments/timestral_123m --checkpoint mistralai/Timestral-123M
+  --output-dir experiments/spatial/timestral_123m --n-lags 36 `
+  --checkpoint mistralai/Timestral-123M
 uv run stress-prediction eval-chronos2 --input data/drought_indices_clean.csv `
-  --output-dir experiments/chronos2
-uv run stress-prediction compare-models `
-  --run LightGBM=experiments/lightgbm `
-  --run Timestral-28M=experiments/timestral `
-  --run Timestral-123M=experiments/timestral_123m `
-  --run Chronos-2=experiments/chronos2 `
-  --output-dir experiments/figures
+  --output-dir experiments/spatial/chronos2 --n-lags 36
+uv run stress-prediction compare-models --recall-target 0.8 `
+  --run "LightGBM (12 lags)=experiments/spatial/lightgbm_lag12" `
+  --run "LightGBM (36 lags)=experiments/spatial/lightgbm_lag36" `
+  --run Timestral-28M=experiments/spatial/timestral_28m `
+  --run Timestral-123M=experiments/spatial/timestral_123m `
+  --run Chronos-2=experiments/spatial/chronos2 `
+  --output-dir experiments/spatial_recall
 ```
 
 Every `train-lgb` and `eval-*` run writes `predictions.csv` (split, label and
 score per sample), which `compare-models` reads. It refuses to plot runs that
-were not scored on the same samples.
+were not scored on the same samples. Run with the current code, the commands
+above select thresholds at `--recall-target` too, so their `metrics.json` will
+match `comparison_metrics.csv`.
 
-On a CPU, the foundation-model runs took about 31 minutes (Timestral-28M), 42
-minutes (Chronos-2) and 110 minutes (Timestral-123M). The three runs record the
-same SHA-256 for the cleaned CSV (`65c32932...`) in their `metrics.json`.
+The three zero-shot runs record the same SHA-256 for the cleaned CSV
+(`65c32932...`) in their `metrics.json`.
 
 ### Historical exploratory results
 

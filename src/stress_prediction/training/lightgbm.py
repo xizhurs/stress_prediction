@@ -20,6 +20,7 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
     f1_score,
+    fbeta_score,
     precision_recall_curve,
     precision_score,
     recall_score,
@@ -34,6 +35,10 @@ from stress_prediction.models import fit_tuned_classifier
 LOGGER = logging.getLogger(__name__)
 TARGET_COLUMN = "vegetation_stress_class"
 LABEL_MAPPING = {"normal": 0, "mild": 0, "moderate": 0, "severe": 1}
+# Missing a stress event costs more than a false alarm, so the decision threshold
+# is the most precise one that still reaches this validation recall.
+DEFAULT_RECALL_TARGET = 0.8
+F_BETA = 2.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,8 @@ class TrainingConfig:
     trials: int = 30
     seed: int = 42
     threads: int = 1
+    spatial_block_size: float | None = 0.5
+    recall_target: float = DEFAULT_RECALL_TARGET
 
 
 def _file_digest(path: Path) -> str:
@@ -81,12 +88,22 @@ def _load_data(path: Path) -> pd.DataFrame:
     return frame
 
 
-def _select_threshold(target: pd.Series, probabilities: np.ndarray) -> float:
+def _select_threshold(
+    target: pd.Series, probabilities: np.ndarray, recall_target: float
+) -> float:
+    """Most precise threshold whose recall reaches the target.
+
+    Among equally precise thresholds the lowest wins, as it recalls the most.
+    """
+    if not 0 < recall_target <= 1:
+        raise ValueError("recall_target must be in (0, 1]")
     precision, recall, thresholds = precision_recall_curve(target, probabilities)
-    if not len(thresholds):
-        raise ValueError("Validation data cannot produce a decision threshold")
-    scores = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
-    return float(thresholds[int(np.argmax(scores))])
+    reaching = np.flatnonzero(recall[:-1] >= recall_target)
+    if not len(reaching):
+        raise ValueError(
+            f"No decision threshold reaches a recall of {recall_target} on validation"
+        )
+    return float(thresholds[reaching[int(np.argmax(precision[:-1][reaching]))]])
 
 
 def _metrics(
@@ -99,6 +116,7 @@ def _metrics(
         "precision": float(precision_score(target, predictions, zero_division=0)),
         "recall": float(recall_score(target, predictions, zero_division=0)),
         "f1": float(f1_score(target, predictions, zero_division=0)),
+        "f2": float(fbeta_score(target, predictions, beta=F_BETA, zero_division=0)),
     }
 
 
@@ -241,6 +259,7 @@ def train_lightgbm(config: TrainingConfig) -> Path:
         target_column=TARGET_COLUMN,
         validation_start=config.validation_start,
         test_start=config.test_start,
+        spatial_block_size=config.spatial_block_size,
     )
     for name, values in (
         ("training", train_y),
@@ -267,9 +286,12 @@ def train_lightgbm(config: TrainingConfig) -> Path:
     )
     validation_probabilities = np.asarray(classifier.predict_proba(validation_x))[:, 1]
     test_probabilities = np.asarray(classifier.predict_proba(test_x))[:, 1]
-    threshold = _select_threshold(validation_y, validation_probabilities)
+    threshold = _select_threshold(
+        validation_y, validation_probabilities, config.recall_target
+    )
     results = {
         "decision_threshold": threshold,
+        "recall_target": config.recall_target,
         "split_samples": {
             "training": len(train_x),
             "validation": len(validation_x),

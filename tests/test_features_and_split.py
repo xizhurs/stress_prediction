@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from stress_prediction.data import split_data
+from stress_prediction.data import assign_spatial_blocks, split_data, split_masks
 from stress_prediction.features import feature_extraction
 
 
@@ -62,3 +62,85 @@ def test_split_uses_target_time_to_prevent_leakage() -> None:
         )
     ).all()
     assert (sample_target_times.loc[test_x["sample_id"]] >= "2021-01-01").all()
+
+
+def _grid_data() -> pd.DataFrame:
+    frames = []
+    for latitude in np.arange(51.0, 53.0, 0.1):
+        for longitude in np.arange(4.0, 6.0, 0.1):
+            frame = _monthly_data(periods=40)
+            frame["latitude"] = latitude
+            frame["longitude"] = longitude
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_assign_spatial_blocks_keeps_blocks_whole_and_near_target_shares() -> None:
+    data = _grid_data()
+    regions = assign_spatial_blocks(
+        data["latitude"].to_numpy(),
+        data["longitude"].to_numpy(),
+        block_size=0.5,
+        seed=0,
+    )
+    again = assign_spatial_blocks(
+        data["latitude"].to_numpy(),
+        data["longitude"].to_numpy(),
+        block_size=0.5,
+        seed=0,
+    )
+
+    assert (regions == again).all()
+    blocks = list(
+        zip(
+            np.floor(data["latitude"] / 0.5).astype(int),
+            np.floor(data["longitude"] / 0.5).astype(int),
+            strict=True,
+        )
+    )
+    per_block = pd.Series(regions).groupby(pd.Series(blocks)).nunique()
+    assert (per_block == 1).all()
+    shares = pd.Series(regions).value_counts(normalize=True)
+    assert set(shares.index) == {"train", "validation", "test"}
+    assert shares["train"] > 0.5
+
+
+def test_spatial_split_holds_out_locations_and_coordinates() -> None:
+    features, target = feature_extraction(
+        _grid_data(),
+        n_lags=2,
+        horizon=3,
+        target_column="vegetation_stress_class",
+    )
+    kwargs = {
+        "target_column": "vegetation_stress_class",
+        "validation_start": "2020-01-01",
+        "test_start": "2021-01-01",
+    }
+    masks = split_masks(
+        features,
+        validation_start="2020-01-01",
+        test_start="2021-01-01",
+        spatial_block_size=0.5,
+    )
+    pixels = {
+        name: set(
+            zip(
+                features.loc[mask, "latitude"].round(3),
+                features.loc[mask, "longitude"].round(3),
+                strict=True,
+            )
+        )
+        for name, mask in masks.items()
+    }
+    train_x, _, validation_x, _, test_x, _ = split_data(
+        features, target, spatial_block_size=0.5, **kwargs
+    )
+
+    assert not pixels["train"] & pixels["validation"]
+    assert not pixels["train"] & pixels["test"]
+    assert not pixels["validation"] & pixels["test"]
+    assert len(train_x) == masks["train"].sum()
+    assert len(test_x) == masks["test"].sum()
+    for part in (train_x, validation_x, test_x):
+        assert "latitude" not in part and "longitude" not in part
