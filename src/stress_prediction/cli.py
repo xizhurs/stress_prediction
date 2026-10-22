@@ -42,6 +42,20 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--trials", type=int, default=30)
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.add_argument("--threads", type=int, default=1)
+    train_parser.add_argument(
+        "--recall-target",
+        type=float,
+        default=0.8,
+        help="Decision threshold: the most precise validation threshold whose "
+        "recall reaches this value.",
+    )
+    train_parser.add_argument(
+        "--spatial-block-size",
+        type=float,
+        default=0.5,
+        help="Degrees per held-out spatial block (70/15/15 train/validation/test "
+        "blocks, on top of the time cut); 0 for a time-only split.",
+    )
     for command, model, checkpoint in (
         ("eval-timestral", "Timestral", "mistralai/Timestral-28M"),
         ("eval-chronos2", "Chronos-2", "amazon/chronos-2"),
@@ -70,11 +84,70 @@ def build_parser() -> argparse.ArgumentParser:
         eval_parser.add_argument("--batch-size", type=int, default=512)
         eval_parser.add_argument("--device", default="cpu")
         eval_parser.add_argument(
+            "--recall-target",
+            type=float,
+            default=0.8,
+            help="Decision threshold: the most precise validation threshold whose "
+            "recall reaches this value.",
+        )
+        eval_parser.add_argument(
+            "--spatial-block-size",
+            type=float,
+            default=0.5,
+            help="Degrees per held-out spatial block (70/15/15 train/validation/test "
+            "blocks, on top of the time cut); 0 for a time-only split.",
+        )
+        eval_parser.add_argument(
             "--max-samples",
             type=int,
             default=None,
             help="Evaluate a fixed random subset of each split, for quick runs.",
         )
+    stacked_parser = commands.add_parser(
+        "train-lgb-stacked",
+        help="Compare LightGBM with and without zero-shot forecast features.",
+    )
+    stacked_parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/drought_indices.csv"),
+        help="Input CSV containing monthly climate and vegetation observations.",
+    )
+    stacked_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/lightgbm_stacked"),
+        help="Directory for cached forecasts, per-variant results and metrics.",
+    )
+    stacked_parser.add_argument(
+        "--model", choices=("chronos2", "timestral"), default="chronos2"
+    )
+    stacked_parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Defaults to amazon/chronos-2 or mistralai/Timestral-28M per --model.",
+    )
+    stacked_parser.add_argument("--n-lags", type=int, default=12)
+    stacked_parser.add_argument("--horizon", type=int, default=6)
+    stacked_parser.add_argument("--validation-start", default="2016-01-01")
+    stacked_parser.add_argument("--test-start", default="2019-01-01")
+    stacked_parser.add_argument("--batch-size", type=int, default=512)
+    stacked_parser.add_argument("--device", default="cpu")
+    stacked_parser.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=50_000,
+        help="Random training subset to forecast; Chronos-2 on CPU is the slow step.",
+    )
+    stacked_parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Evaluate a fixed random subset of validation and test, for quick runs.",
+    )
+    stacked_parser.add_argument("--trials", type=int, default=30)
+    stacked_parser.add_argument("--seed", type=int, default=42)
+    stacked_parser.add_argument("--threads", type=int, default=1)
     compare_parser = commands.add_parser(
         "compare-models",
         help="Plot validation thresholds and test confusion matrices per model.",
@@ -85,6 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="NAME=DIR",
         help="A run directory containing predictions.csv; repeat for each model.",
+    )
+    compare_parser.add_argument(
+        "--recall-target",
+        type=float,
+        default=0.8,
+        help="Decision threshold: the most precise validation threshold whose "
+        "recall reaches this value.",
     )
     compare_parser.add_argument(
         "--output-dir",
@@ -120,6 +200,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             trials=args.trials,
             seed=args.seed,
             threads=args.threads,
+            spatial_block_size=args.spatial_block_size or None,
+            recall_target=args.recall_target,
         )
         train_lightgbm(config)
     elif args.command in {"eval-timestral", "eval-chronos2"}:
@@ -134,6 +216,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "batch_size": args.batch_size,
             "device": args.device,
             "max_samples": args.max_samples,
+            "spatial_block_size": args.spatial_block_size or None,
+            "recall_target": args.recall_target,
         }
         if args.command == "eval-timestral":
             from stress_prediction.training.timestral import (
@@ -149,6 +233,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
             evaluate_chronos2(Chronos2Config(**options))
+    elif args.command == "train-lgb-stacked":
+        from stress_prediction.training.stacked import (
+            StackedConfig,
+            train_lightgbm_stacked,
+        )
+
+        checkpoint = args.checkpoint or (
+            "amazon/chronos-2"
+            if args.model == "chronos2"
+            else "mistralai/Timestral-28M"
+        )
+        train_lightgbm_stacked(
+            StackedConfig(
+                input_path=args.input,
+                output_dir=args.output_dir,
+                model=args.model,
+                checkpoint=checkpoint,
+                n_lags=args.n_lags,
+                horizon=args.horizon,
+                validation_start=args.validation_start,
+                test_start=args.test_start,
+                batch_size=args.batch_size,
+                device=args.device,
+                max_samples=args.max_samples,
+                max_train_samples=args.max_train_samples,
+                trials=args.trials,
+                seed=args.seed,
+                threads=args.threads,
+            )
+        )
     elif args.command == "compare-models":
         from stress_prediction.comparison import plot_model_comparison
 
@@ -158,7 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not separator or not name or not directory:
                 parser.error(f"--run expects NAME=DIR, got {item!r}")
             runs[name] = Path(directory)
-        for path in plot_model_comparison(runs, args.output_dir):
+        for path in plot_model_comparison(runs, args.output_dir, args.recall_target):
             print(path)
     elif args.command == "predict":
         from stress_prediction.prediction import predict_file

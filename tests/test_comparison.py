@@ -8,6 +8,7 @@ import pytest
 
 from stress_prediction.cli import main
 from stress_prediction.comparison import (
+    METRICS_TABLE,
     PRECISION_RECALL_FIGURE,
     TEST_FIGURE,
     THRESHOLD_FIGURE,
@@ -43,8 +44,22 @@ def test_plot_model_comparison_writes_both_figures(tmp_path: Path) -> None:
         THRESHOLD_FIGURE,
         TEST_FIGURE,
         PRECISION_RECALL_FIGURE,
+        METRICS_TABLE,
     ]
     assert all(path.stat().st_size > 0 for path in paths)
+
+
+def test_comparison_metrics_use_the_recall_target_threshold(tmp_path: Path) -> None:
+    labels = np.random.default_rng(0).integers(0, 2, 300)
+    runs = {"Model A": _write_run(tmp_path / "a", labels, 0.2, 1)}
+
+    *_, table_path = plot_model_comparison(runs, tmp_path / "figures", 0.9)
+
+    table = pd.read_csv(table_path)
+    assert set(table["split"]) == {"validation", "test"}
+    assert (table["recall_target"] == 0.9).all()
+    validation = table[table["split"] == "validation"].iloc[0]
+    assert validation["recall"] >= 0.9
 
 
 def test_plot_model_comparison_rejects_different_samples(tmp_path: Path) -> None:

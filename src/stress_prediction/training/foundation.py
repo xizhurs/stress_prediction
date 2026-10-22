@@ -1,8 +1,8 @@
 """Zero-shot evaluation of forecasting foundation models on the stress task.
 
 A model is reduced to one callable that forecasts NDVI quantiles. Everything
-else mirrors the LightGBM workflow: the same samples, temporal splits,
-validation-selected threshold, metrics and figures.
+else mirrors the LightGBM workflow: the same samples, temporal and spatial
+splits, validation-selected threshold, metrics and figures.
 """
 
 from __future__ import annotations
@@ -20,8 +20,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from stress_prediction.data import split_masks
 from stress_prediction.features import DEFAULT_FEATURES, feature_extraction
 from stress_prediction.training.lightgbm import (
+    DEFAULT_RECALL_TARGET,
     LABEL_MAPPING,
     TARGET_COLUMN,
     _file_digest,
@@ -57,6 +59,8 @@ class FoundationConfig:
     batch_size: int = 512
     device: str = "cpu"
     max_samples: int | None = None
+    spatial_block_size: float | None = 0.5
+    recall_target: float = DEFAULT_RECALL_TARGET
 
 
 def to_numpy(values: Any) -> np.ndarray:
@@ -201,21 +205,17 @@ def evaluate_foundation(
         target_column=TARGET_COLUMN,
     )
     binary_target = labels.map(LABEL_MAPPING).astype(int)
-    target_time = pd.to_datetime(features["target_time"])
-    validation_cutoff = pd.Timestamp(config.validation_start)
-    test_cutoff = pd.Timestamp(config.test_start)
-    if validation_cutoff >= test_cutoff:
-        raise ValueError("validation_start must be earlier than test_start")
-    masks = {
-        "validation": (
-            (target_time >= validation_cutoff) & (target_time < test_cutoff)
-        ),
-        "test": target_time >= test_cutoff,
-    }
+    masks = split_masks(
+        features,
+        validation_start=config.validation_start,
+        test_start=config.test_start,
+        spatial_block_size=config.spatial_block_size,
+    )
 
     scores: dict[str, dict[str, np.ndarray]] = {}
     targets: dict[str, pd.Series] = {}
-    for split, mask in masks.items():
+    for split in ("validation", "test"):
+        mask = masks[split]
         samples = features.loc[mask].reset_index(drop=True)
         target = binary_target.loc[mask].reset_index(drop=True)
         if config.max_samples is not None and len(samples) > config.max_samples:
@@ -257,7 +257,7 @@ def evaluate_foundation(
     selected_threshold = 0.0
     for method in ("model", "persistence"):
         threshold = _select_threshold(
-            targets["validation"], scores["validation"][method]
+            targets["validation"], scores["validation"][method], config.recall_target
         )
         section = {
             "decision_threshold": threshold,

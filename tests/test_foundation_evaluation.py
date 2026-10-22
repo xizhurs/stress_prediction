@@ -11,13 +11,22 @@ import pandas as pd
 import pytest
 
 from stress_prediction.cli import main
-from stress_prediction.training.chronos2 import Chronos2Config, evaluate_chronos2
+from stress_prediction.training.chronos2 import (
+    Chronos2Config,
+    chronos2_forecaster,
+    evaluate_chronos2,
+)
 from stress_prediction.training.foundation import _severe_probability
-from stress_prediction.training.timestral import TimestralConfig, evaluate_timestral
+from stress_prediction.training.stacked import StackedConfig, train_lightgbm_stacked
+from stress_prediction.training.timestral import (
+    TimestralConfig,
+    evaluate_timestral,
+    timestral_forecaster,
+)
 
 LEVELS = np.linspace(0.01, 0.99, 21)
 SPREAD = np.array([NormalDist().inv_cdf(level) for level in LEVELS])
-METRIC_NAMES = {"average_precision", "roc_auc", "precision", "recall", "f1"}
+METRIC_NAMES = {"average_precision", "roc_auc", "precision", "recall", "f1", "f2"}
 
 
 class PersistenceForecaster:
@@ -86,7 +95,7 @@ def _synthetic_observations() -> pd.DataFrame:
     times = pd.date_range("2000-01-01", "2022-12-01", freq="MS")
     month = times.month.to_numpy()
     frames = []
-    for latitude in (51.0, 52.0, 53.0, 54.0):
+    for latitude in 51.0 + 0.5 * np.arange(40):
         frames.append(
             pd.DataFrame(
                 {
@@ -200,6 +209,24 @@ def test_max_samples_limits_each_split(tmp_path: Path, observations_path: Path) 
     assert metrics["split_samples"] == {"validation": 100, "test": 100}
 
 
+def test_spatial_blocks_hold_out_locations_from_evaluation(
+    tmp_path: Path, observations_path: Path
+) -> None:
+    samples = {}
+    for name, block_size in (("spatial", 0.5), ("temporal", None)):
+        config = TimestralConfig(
+            input_path=observations_path,
+            output_dir=tmp_path / name,
+            spatial_block_size=block_size,
+        )
+        metrics_path = evaluate_timestral(config, forecaster=PersistenceForecaster())
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        samples[name] = metrics["split_samples"]
+
+    for split in ("validation", "test"):
+        assert 0 < samples["spatial"][split] < 0.3 * samples["temporal"][split]
+
+
 @pytest.mark.parametrize("command", ["eval-timestral", "eval-chronos2"])
 def test_eval_help_is_side_effect_free(command: str, capsys: object) -> None:
     with pytest.raises(SystemExit) as error:
@@ -208,3 +235,55 @@ def test_eval_help_is_side_effect_free(command: str, capsys: object) -> None:
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     assert "--checkpoint" in output
     assert "--max-samples" in output
+
+
+@pytest.mark.parametrize(
+    ("model", "prefix"), [("chronos2", "chronos"), ("timestral", "timestral")]
+)
+def test_train_lightgbm_stacked_compares_variants_and_caches_forecasts(
+    tmp_path: Path, observations_path: Path, model: str, prefix: str
+) -> None:
+    pipeline = PersistencePipeline()
+    persistence = PersistenceForecaster()
+    forecast = (
+        chronos2_forecaster(pipeline, 64)
+        if model == "chronos2"
+        else timestral_forecaster(persistence)
+    )
+    calls = pipeline.prediction_lengths if model == "chronos2" else persistence.shapes
+    config = StackedConfig(
+        input_path=observations_path,
+        output_dir=tmp_path / "stacked",
+        model=model,
+        batch_size=64,
+        max_train_samples=150,
+        max_samples=100,
+        trials=2,
+        spatial_block_size=None,
+    )
+
+    metrics_path = train_lightgbm_stacked(config, forecast=forecast)
+
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["split_samples"] == {"training": 150, "validation": 100, "test": 100}
+    assert set(metrics["variants"]) == {"baseline", "climatology", prefix}
+    for name, variant in metrics["variants"].items():
+        assert set(variant["test"]) == METRIC_NAMES
+        for artifact in ("predictions.csv", "feature_importance.png"):
+            assert (metrics_path.parent / name / artifact).stat().st_size > 0
+    assert (metrics_path.parent / f"{prefix}_train.npz").is_file()
+    count = len(calls)
+    assert count > 0
+
+    train_lightgbm_stacked(config, forecast=forecast)
+
+    assert len(calls) == count
+
+
+def test_train_lgb_stacked_help_is_side_effect_free(capsys: object) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["train-lgb-stacked", "--help"])
+    assert error.value.code == 0
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "--max-train-samples" in output
+    assert "--model" in output

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -10,17 +11,23 @@ import pandas as pd
 from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
-    f1_score,
+    fbeta_score,
     precision_recall_curve,
     precision_score,
     recall_score,
 )
 
-from stress_prediction.training.lightgbm import _select_threshold
+from stress_prediction.training.lightgbm import (
+    DEFAULT_RECALL_TARGET,
+    F_BETA,
+    _metrics,
+    _select_threshold,
+)
 
-THRESHOLD_FIGURE = "F1_threshold_val_models.png"
+THRESHOLD_FIGURE = "threshold_val_models.png"
 TEST_FIGURE = "test_results_models.png"
 PRECISION_RECALL_FIGURE = "precision_recall_models.png"
+METRICS_TABLE = "comparison_metrics.csv"
 THRESHOLD_GRID = np.linspace(0.0, 1.0, 101)
 
 
@@ -55,12 +62,18 @@ def _load_runs(
     return loaded
 
 
-def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Path]:
+def plot_model_comparison(
+    runs: Mapping[str, Path],
+    output_dir: Path,
+    recall_target: float = DEFAULT_RECALL_TARGET,
+) -> list[Path]:
     """Plot validation threshold curves and test confusion matrices per model.
 
     Each run directory needs a `predictions.csv` written by `train-lgb` or an
-    `eval-*` command. The decision threshold is the F1-optimal validation one,
-    exactly as in the runs themselves.
+    `eval-*` command. The decision threshold is the most precise validation one
+    reaching `recall_target`, so changing the target re-selects thresholds from
+    the saved scores without re-running any model. Besides the figures it writes
+    a table of every model's validation and test metrics at that threshold.
     """
     if not runs:
         raise ValueError("At least one run is required")
@@ -73,7 +86,7 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
     loaded = _load_runs(runs)
     thresholds = {
         name: _select_threshold(
-            pd.Series(splits["validation"][0]), splits["validation"][1]
+            pd.Series(splits["validation"][0]), splits["validation"][1], recall_target
         )
         for name, splits in loaded.items()
     }
@@ -81,31 +94,50 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
     rows = -(-len(runs) // columns)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    metrics_path = output_dir / METRICS_TABLE
+    pd.DataFrame(
+        [
+            {
+                "model": name,
+                "split": split,
+                "recall_target": recall_target,
+                "decision_threshold": thresholds[name],
+                **_metrics(pd.Series(labels), scores, thresholds[name]),
+            }
+            for name, splits in loaded.items()
+            for split, (labels, scores) in splits.items()
+        ]
+    ).to_csv(metrics_path, index=False)
+
     figure, axes = plt.subplots(
         rows, columns, figsize=(6.2 * columns, 4.6 * rows), sharex=True, sharey=True
     )
     flat_axes = np.atleast_1d(axes).ravel()
     for axis, (name, splits) in zip(flat_axes, loaded.items(), strict=False):
         labels, scores = splits["validation"]
-        precision, recall, f1 = (
+        precision, recall, f2 = (
             np.array(
                 [
                     metric(labels, scores >= threshold, zero_division=0)
                     for threshold in THRESHOLD_GRID
                 ]
             )
-            for metric in (precision_score, recall_score, f1_score)
+            for metric in (
+                precision_score,
+                recall_score,
+                partial(fbeta_score, beta=F_BETA),
+            )
         )
         axis.plot(THRESHOLD_GRID, precision, label="Precision")
         axis.plot(THRESHOLD_GRID, recall, label="Recall")
-        axis.plot(THRESHOLD_GRID, f1, label="F1-score")
+        axis.plot(THRESHOLD_GRID, f2, label="F2-score")
         best = thresholds[name]
         axis.scatter(
             [best],
-            [f1_score(labels, scores >= best, zero_division=0)],
+            [fbeta_score(labels, scores >= best, beta=F_BETA, zero_division=0)],
             color="red",
             zorder=3,
-            label=f"Best F1 threshold ({best:.3f})",
+            label=f"Selected threshold ({best:.3f})",
         )
         axis.set(title=name, xlabel="Threshold", ylabel="Metric value")
         axis.set_xlim(-0.02, 1.02)
@@ -113,7 +145,7 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
         axis.legend(loc="lower left", fontsize=8)
     for axis in flat_axes[len(loaded) :]:
         axis.set_visible(False)
-    figure.suptitle("Validation precision, recall and F1-score by threshold")
+    figure.suptitle("Validation precision, recall and F2-score by threshold")
     figure.tight_layout()
     threshold_path = output_dir / THRESHOLD_FIGURE
     figure.savefig(threshold_path, dpi=160)
@@ -141,7 +173,7 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
                 f"{name}\n"
                 f"P {precision_score(labels, predicted, zero_division=0):.2f} | "
                 f"R {recall_score(labels, predicted, zero_division=0):.2f} | "
-                f"F1 {f1_score(labels, predicted, zero_division=0):.2f}"
+                f"F2 {fbeta_score(labels, predicted, beta=F_BETA, zero_division=0):.2f}"
             ),
             xlabel="Predicted Labels",
             ylabel="True Labels",
@@ -191,4 +223,4 @@ def plot_model_comparison(runs: Mapping[str, Path], output_dir: Path) -> list[Pa
     precision_recall_path = output_dir / PRECISION_RECALL_FIGURE
     figure.savefig(precision_recall_path, dpi=160)
     plt.close(figure)
-    return [threshold_path, test_path, precision_recall_path]
+    return [threshold_path, test_path, precision_recall_path, metrics_path]
